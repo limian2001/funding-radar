@@ -119,3 +119,26 @@ def latest_health():
             return []
         return [dict(r) for r in c.execute(
             "SELECT * FROM health WHERE ts=?", (row["t"],)).fetchall()]
+
+
+def trailing(asset, hours=24, threshold=10.0):
+    """过去 N 小时的真实表现。比「此刻的年化」诚实得多：
+    瞬时年化是把一个 1 小时的费率外推 8760 小时，几乎必然失真；
+    真正该看的是这段时间里它平均多少、波动多大、有多少比例的时刻站得住。"""
+    import time as _t
+    since = int(_t.time()) - hours * 3600
+    with _conn() as c:
+        r = c.execute(
+            "SELECT COUNT(*) n,"
+            " AVG(net_apr) avg_net, MIN(net_apr) min_net, MAX(net_apr) max_net,"
+            " MIN(mark_spread_pct) min_basis, MAX(mark_spread_pct) max_basis,"
+            " SUM(CASE WHEN net_apr >= ? THEN 1 ELSE 0 END) n_above"
+            " FROM pair WHERE asset=? AND ts>=? AND net_apr IS NOT NULL",
+            (threshold, asset, since)).fetchone()
+        d = dict(r) if r else {}
+        n = d.get("n") or 0
+        d["pct_above"] = (100.0 * (d.get("n_above") or 0) / n) if n else None
+        d["basis_range"] = ((d["max_basis"] - d["min_basis"])
+                            if d.get("max_basis") is not None
+                            and d.get("min_basis") is not None else None)
+        return d

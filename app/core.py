@@ -39,6 +39,15 @@ def build_pairs(universe, snap):
             continue
         lo = min(legs, key=lambda x: x["apr"])   # 在这里做多（费率最负 = 收钱）
         hi = max(legs, key=lambda x: x["apr"])   # 在这里做空（费率最正 = 收钱）
+        if lo["venue"] == hi["venue"]:
+            # 所有腿费率相同（常见于新上市、尚未产生真实结算的合约）。
+            # 同一家所不可能既做多又做空，这不是机会，记成空值而不是 0。
+            pairs_out.append({
+                "asset": asset, "long_venue": None, "long_apr": None,
+                "short_venue": None, "short_apr": None, "net_apr": None,
+                "mark_spread_pct": None, "n_legs": len(legs),
+            })
+            continue
         basis = ((hi["mark"] - lo["mark"]) / lo["mark"] * 100.0
                  if lo["mark"] else None)
         pairs_out.append({
