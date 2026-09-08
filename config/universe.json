@@ -1,14 +1,15 @@
 {
-  "_说明": "每个标的：name 中文名，underlying 是真实股票（market: A/HK/US + code），venues 是各所合约符号。先用 discover 搜符号再填，别猜。改完自动生效，不用重启。",
+  "_说明": "每个标的：name 中文名，underlying 是真实股票（market: A/HK/US + code），venues 是各所合约符号。先用 discover 搜符号再填，别猜。改完自动生效，不用重启。_fx 是汇率兜底：接口取不到时用手填值，留 null 则完全依赖接口。",
   "_fx": {
-    "_注": "接口取不到汇率时用这里的手填值兜底；留空则完全依赖接口",
     "CNH": null,
     "HKD": null
   },
-
   "CXMT": {
     "name": "长鑫科技",
-    "underlying": {"market": "A", "code": "688825"},
+    "underlying": {
+      "market": "A",
+      "code": "688825"
+    },
     "venues": {
       "binance": "CXMTUSDT",
       "bybit": "CXMTUSDT",
@@ -18,10 +19,12 @@
       "bingx": "CXMT-USDT"
     }
   },
-
   "UNITREE": {
     "name": "宇树科技",
-    "underlying": {"market": "A", "code": "688099"},
+    "underlying": {
+      "market": "A",
+      "code": "688099"
+    },
     "venues": {
       "binance": "UNITREEUSDT",
       "bybit": "UNITREEUSDT",
@@ -31,7 +34,6 @@
       "bingx": "UNITREE-USDT"
     }
   },
-
   "BTC": {
     "name": "比特币（对照组）",
     "underlying": null,

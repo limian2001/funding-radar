@@ -126,7 +126,15 @@ def fx_rates(override=None):
     got = _cached("fx", 600, _fetch) or {}
     out = {"USD": 1.0}
     out.update(got)
-    out.update({k: float(v) for k, v in (override or {}).items() if v})
+    # 手填兜底值：跳过 _ 开头的注释键，非数字一律忽略，
+    # 不能让 config 里的一句说明把整轮采集打挂
+    for k, v in (override or {}).items():
+        if k.startswith("_") or v in (None, "", 0):
+            continue
+        try:
+            out[k] = float(v)
+        except (TypeError, ValueError):
+            continue
     return out
 
 
