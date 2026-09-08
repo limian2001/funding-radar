@@ -1,0 +1,21 @@
+services:
+  radar:
+    build: .
+    image: funding-radar:local
+    container_name: funding-radar
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # config 是宿主机挂载 -> 改 universe.json 不用重新 build
+      - ./config:/app/config:ro
+      - radar-data:/data
+    # BIND 默认只绑回环。要公网访问就在 .env 里设 BIND=0.0.0.0
+    # 一旦对公网开放，务必同时设置 AUTH_USER / AUTH_PASS
+    ports:
+      - "${BIND:-127.0.0.1}:${PORT:-8080}:8080"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  radar-data:

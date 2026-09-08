@@ -1,0 +1,19 @@
+# 凭据 —— 绝对不能进仓库
+.env
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+
+# 临时/恢复目录
+_recover/
+
+# 运行时产物
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+data/
+.DS_Store

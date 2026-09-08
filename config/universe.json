@@ -1,0 +1,24 @@
+{
+  "_说明": "key 是你自己给标的起的名字；value 里每个 venue 填该所的真实符号。先用 discover 搜出来再填，不要猜。改完自动生效，不用重启容器。",
+
+  "BTC": {
+    "hyperliquid": "BTC",
+    "binance": "BTCUSDT",
+    "bybit": "BTCUSDT",
+    "gate": "BTC_USDT"
+  },
+
+  "CXMT": {
+    "binance": "CXMTUSDT",
+    "bybit": "CXMTUSDT",
+    "gate": "CXMT_USDT",
+    "okx": "CXMT-USDT-SWAP"
+  },
+
+  "UNITREE": {
+    "binance": "UNITREEUSDT",
+    "bybit": "UNITREEUSDT",
+    "gate": "UNITREE_USDT",
+    "okx": "UNITREE-USDT-SWAP"
+  }
+}
