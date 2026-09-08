@@ -51,16 +51,17 @@ class H(BaseHTTPRequestHandler):
         if not h.startswith("Basic "):
             return False
         try:
-            u, _, p = base64.b64decode(h[6:]).decode().partition(":")
+            got = base64.b64decode(h[6:].strip())
         except Exception:
             return False
-        # compare_digest 防时序侧信道
-        return (hmac.compare_digest(u, AUTH_USER)
-                and hmac.compare_digest(p, AUTH_PASS))
+        # 必须用 bytes 比较：hmac.compare_digest 传 str 时只接受纯 ASCII，
+        # 密码里带中文或任何非 ASCII 字符会抛 TypeError -> 500。
+        want = ("%s:%s" % (AUTH_USER, AUTH_PASS)).encode("utf-8")
+        return hmac.compare_digest(got, want)
 
     def do_GET(self):
         try:
-            if self.path.startswith("/healthz"):        # 探针不校验
+            if self.path.startswith("/healthz"):          # 探针不校验
                 return self._send(200, "ok", "text/plain")
             if not self._authed():
                 return self._send(
@@ -72,8 +73,13 @@ class H(BaseHTTPRequestHandler):
             else:
                 self._send(200, web.render(), "text/html; charset=utf-8")
         except Exception:
+            # 打完整堆栈到日志，页面只回一句话
             traceback.print_exc()
-            self._send(500, "internal error", "text/plain")
+            try:
+                self._send(500, "internal error - 看 docker compose logs",
+                           "text/plain; charset=utf-8")
+            except Exception:
+                pass
 
     def log_message(self, *a):
         pass
