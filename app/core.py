@@ -1,40 +1,14 @@
 # -*- coding: utf-8 -*-
 """一轮采集：读 universe -> 拉行情 -> 算折溢价与资金费差 -> 落库。"""
-import json
-import os
 import time
 
-from . import quotes, store, venues
+from . import quotes, store, universe as uni_store, venues
 
-UNIVERSE_PATH = os.environ.get("UNIVERSE_PATH", "/app/config/universe.json")
 
 
 def load_universe():
-    """每轮重新读，改完 config 不用重启容器。
-    支持两种写法：
-      新: {"CXMT": {"name":..,"underlying":{..},"venues":{venue:symbol}}}
-      旧: {"CXMT": {venue: symbol}}
-    """
-    try:
-        with open(UNIVERSE_PATH, encoding="utf-8") as f:
-            raw = json.load(f)
-    except Exception:
-        return {}, {}
-    fx_override = raw.get("_fx") or {}
-    uni = {}
-    for k, v in raw.items():
-        if k.startswith("_") or not isinstance(v, dict):
-            continue
-        if "venues" in v:
-            uni[k] = {"name": v.get("name", k),
-                      "underlying": v.get("underlying"),
-                      "venues": {a: b for a, b in v["venues"].items()
-                                 if not a.startswith("_")}}
-        else:
-            uni[k] = {"name": k, "underlying": None,
-                      "venues": {a: b for a, b in v.items()
-                                 if not a.startswith("_")}}
-    return uni, fx_override
+    """标的清单从可写副本读，每轮重新读——页面上加了标的立即生效。"""
+    return uni_store.parsed()
 
 
 def _prem(px, anchor):

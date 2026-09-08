@@ -213,35 +213,64 @@ def fetch_bitget(want=None):
 
 
 # ------------------------------------------------------------ bingx
+def _bingx_interval(sym):
+    """BingX 不直接给结算周期，用最近两次结算的时间差反推。"""
+    try:
+        d = _req("https://open-api.bingx.com/openApi/swap/v2/quote/fundingRate"
+                 "?symbol=%s&limit=2" % urllib.parse.quote(sym)).get("data") or []
+        if len(d) >= 2:
+            t = sorted(_f(x.get("fundingTime"), 0) for x in d[:2])
+            h = (t[1] - t[0]) / 3600000.0
+            if 0 < h <= 24:
+                return h
+    except Exception:
+        pass
+    return None
+
+
 def fetch_bingx(want=None):
-    """BingX 用 symbol 形如 CXMT-USDT。逐个查我们需要的，不全量拉。"""
-    if not want:
-        return []
+    """BingX 符号形如 CXMT-USDT。先试一次性拿全量，失败再逐个查。"""
+    allrows = {}
+    try:
+        d = _req("https://open-api.bingx.com/openApi/swap/v2/quote/premiumIndex")
+        for x in (d.get("data") or []):
+            if isinstance(x, dict) and x.get("symbol"):
+                allrows[x["symbol"]] = x
+    except Exception:
+        pass
+
+    syms = list(want) if want else list(allrows)
     out = []
-    for s in list(want)[:30]:
-        try:
-            p = _req("https://open-api.bingx.com/openApi/swap/v2/quote/"
-                     "premiumIndex?symbol=" + urllib.parse.quote(s))
-            d = p.get("data") or {}
-            if isinstance(d, list):
-                d = d[0] if d else {}
-            b = {}
+    for s in syms[:40]:
+        d = allrows.get(s)
+        if d is None:
             try:
-                bb = _req("https://open-api.bingx.com/openApi/swap/v2/quote/"
-                          "bookTicker?symbol=" + urllib.parse.quote(s))
-                b = bb.get("data") or {}
-                if isinstance(b, list):
-                    b = b[0] if b else {}
+                r = _req("https://open-api.bingx.com/openApi/swap/v2/quote/"
+                         "premiumIndex?symbol=" + urllib.parse.quote(s))
+                d = r.get("data")
+                if isinstance(d, list):
+                    d = d[0] if d else None
             except Exception:
-                pass
-            out.append(_row("bingx", s, _f(d.get("lastFundingRate"), 0.0), 4.0,
-                            mark=_f(d.get("markPrice")), last=_f(d.get("markPrice")),
-                            next_ts=d.get("nextFundingTime"),
-                            bid=_f(b.get("bidPrice")), bid_sz=_f(b.get("bidQty")),
-                            ask=_f(b.get("askPrice")), ask_sz=_f(b.get("askQty"))))
+                d = None
+        if not d:
+            continue
+        b = {}
+        try:
+            bb = _req("https://open-api.bingx.com/openApi/swap/v2/quote/"
+                      "bookTicker?symbol=" + urllib.parse.quote(s))
+            b = bb.get("data") or {}
+            if isinstance(b, list):
+                b = b[0] if b else {}
         except Exception:
             pass
-        time.sleep(0.1)
+        px = _f(d.get("markPrice"))
+        out.append(_row("bingx", s, _f(d.get("lastFundingRate"), 0.0),
+                        _bingx_interval(s) or 4.0,
+                        mark=px, last=_f(b.get("lastPrice")) or px,
+                        next_ts=d.get("nextFundingTime"),
+                        bid=_f(b.get("bidPrice")), bid_sz=_f(b.get("bidVolume") or b.get("bidQty")),
+                        ask=_f(b.get("askPrice")), ask_sz=_f(b.get("askVolume") or b.get("askQty"))))
+        time.sleep(0.08)
     return out
 
 
@@ -292,14 +321,52 @@ def collect(want_by_venue):
             for r in rows:
                 if r["symbol"] in want:
                     snap[(name, r["symbol"])] = r
+            got = [s for s in want if (name, s) in snap]
             miss = [s for s in want if (name, s) not in snap]
             bookfn = NEEDS_BOOK.get(name)
             if bookfn:
-                for s, b in bookfn([s for s in want
-                                    if (name, s) in snap]).items():
+                for s, b in bookfn(got).items():
                     snap[(name, s)].update(b)
-            health[name] = {"ok": True, "n": len(rows),
-                            "err": ("未匹配: " + ",".join(miss)) if miss else ""}
+            # 一个都没匹配上就算失败——否则接口挂了也会显示绿灯，
+            # 「安静地什么都没有」比报错更难发现
+            health[name] = {"ok": bool(got), "n": len(rows),
+                            "err": ("未匹配: " + ", ".join(miss)) if miss else ""}
         except Exception as e:
             health[name] = {"ok": False, "n": 0, "err": str(e)[:200]}
     return snap, health
+
+
+# ------------------------------------------------------------ 搜索
+LISTABLE = ["hyperliquid", "binance", "bybit", "gate", "bitget", "edgex"]
+GUESS = {"bingx": ["%s-USDT", "%s-USDT"], "okx": ["%s-USDT-SWAP"]}
+
+
+def search(keyword):
+    """按关键词在各所找同一标的的真实符号。
+    能一次列全部合约的所直接筛；只能按符号查的所用命名规则猜再验证。"""
+    kw = (keyword or "").strip().upper()
+    if not kw:
+        return [], {}
+    hits, errs = [], {}
+    for name in LISTABLE:
+        try:
+            hits += [r for r in ADAPTERS[name]()
+                     if kw in (r["symbol"] or "").upper()]
+        except Exception as e:
+            errs[name] = str(e)[:160]
+    try:
+        hits += fetch_okx(keyword=kw)
+    except Exception as e:
+        errs["okx"] = str(e)[:160]
+    try:
+        hits += fetch_bingx(want={p % kw for p in GUESS["bingx"]})
+    except Exception as e:
+        errs["bingx"] = str(e)[:160]
+    out = []
+    for h in hits:
+        out.append({"venue": h["venue"], "symbol": h["symbol"],
+                    "rate": h["rate"], "interval_h": h["interval_h"],
+                    "apr_pct": apr(h) * 100.0, "last": h.get("last"),
+                    "mark": h.get("mark")})
+    out.sort(key=lambda x: (x["venue"], x["symbol"]))
+    return out, errs

@@ -24,9 +24,19 @@ def main(argv):
         print("tencent:", quotes._from_tencent(market, code))
         print("eastmoney:", quotes._from_eastmoney(market, code))
         return
+    if what == "raw":
+        # 直接看某个 URL 的原始返回，接口结构对不上时最快的定位手段
+        import urllib.request
+        url = argv[1]
+        req = urllib.request.Request(url, headers={"User-Agent": "radar/2.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = r.read().decode("utf-8", "replace")
+        print("HTTP", r.status, "len", len(body))
+        print(body[:1500])
+        return
     fn = venues.ADAPTERS.get(what)
     if not fn:
-        print("可用: %s | stock <A|HK|US> <code> | fx"
+        print("可用: %s | stock <A|HK|US> <code> | fx | raw <url>"
               % ", ".join(sorted(venues.ADAPTERS)))
         return
     want = set(argv[1:]) or None

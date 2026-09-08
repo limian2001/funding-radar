@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
-"""看板：/ 汇总（一标的一行），/a/<asset> 明细（一交易所一行）。
-服务端渲染，无外部资源。"""
-import html
+"""前端：单页 + 标签页，切换标的不请求后端；数据每 60 秒后台刷新。
+渲染逻辑只有 JS 一份，服务端只出数据。"""
 import json
-import time
-import urllib.parse
 
-from . import store
+from . import quotes, store, universe as uni_store, venues
 
 CANON = ["hyperliquid", "binance", "bybit", "okx", "gate",
          "bitget", "bingx", "edgex"]
@@ -14,239 +11,346 @@ CANON = ["hyperliquid", "binance", "bybit", "okx", "gate",
 CSS = """
 *{box-sizing:border-box}
 :root{--bg:#0d0d0f;--card:#151518;--line:#26262b;--fg:#e6e6e8;--mut:#8b8b93;
---faint:#66666e;--pos:#2fbf71;--neg:#ff5c50;--acc:#4a9eff}
-body{margin:0;padding:20px;background:var(--bg);color:var(--fg);
+--faint:#66666e;--pos:#2fbf71;--neg:#ff5c50;--acc:#4a9eff;--warn:#e0a92b}
+body{margin:0;padding:16px 20px;background:var(--bg);color:var(--fg);
 font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
-h1{font-size:16px;margin:0 0 2px;font-family:system-ui,sans-serif}
-.sub{color:var(--mut);font-size:11px;margin-bottom:14px}
+a{color:var(--acc);text-decoration:none}
+h1{font-size:15px;margin:0;font-family:system-ui,sans-serif}
+.top{display:flex;align-items:baseline;gap:14px;margin-bottom:10px}
+.sub{color:var(--mut);font-size:11px}
+.tabs{display:flex;gap:2px;flex-wrap:wrap;border-bottom:1px solid var(--line);
+margin-bottom:12px}
+.tab{padding:6px 14px;cursor:pointer;color:var(--mut);border:1px solid transparent;
+border-bottom:none;border-radius:5px 5px 0 0;font-family:system-ui,sans-serif;
+font-size:12px;user-select:none;position:relative;top:1px}
+.tab:hover{color:var(--fg)}
+.tab.on{background:var(--card);border-color:var(--line);color:var(--fg)}
+.tab .p{font-size:10px;margin-left:6px}
 .wrap{overflow-x:auto}
 table{border-collapse:collapse;background:var(--card);border:1px solid var(--line);
 border-radius:6px;overflow:hidden;width:100%}
 th,td{padding:7px 10px;text-align:right;border-bottom:1px solid var(--line);
 white-space:nowrap;font-variant-numeric:tabular-nums}
 th{background:#1c1c21;color:var(--mut);font-size:10.5px;font-weight:600;
-text-align:right;font-family:system-ui,sans-serif}
+font-family:system-ui,sans-serif}
 th:first-child,td:first-child{text-align:left}
 tr:last-child td{border-bottom:none}
 tbody tr:hover{background:#1a1a1f}
 .pos{color:var(--pos)}.neg{color:var(--neg)}.mut{color:var(--mut)}
 .faint{color:var(--faint);font-size:10.5px}
-.big{font-size:14px;font-weight:700}
 .name{font-family:system-ui,sans-serif;font-weight:600}
 .tag{display:inline-block;font-size:9px;padding:0 4px;border-radius:3px;
 margin-left:5px;color:#0d0d0f;font-family:system-ui,sans-serif}
 .t-long{background:var(--pos)}.t-short{background:var(--neg)}
-.t-prem{background:#e0a92b}
+.t-prem{background:var(--warn)}
 .head{background:var(--card);border:1px solid var(--line);border-radius:6px;
-padding:12px 16px;margin-bottom:12px;display:flex;gap:26px;align-items:baseline;
-flex-wrap:wrap}
-.head .px{font-size:22px;font-weight:700}
-.note{color:var(--mut);font-size:11px;margin-top:16px;max-width:82ch;
+padding:11px 16px;margin-bottom:10px;display:flex;gap:28px;flex-wrap:wrap;
+align-items:baseline}
+.head .px{font-size:20px;font-weight:700}
+.note{color:var(--mut);font-size:11px;margin-top:14px;max-width:84ch;
 font-family:system-ui,sans-serif;line-height:1.65}
 .note b{color:var(--fg)}
-.foot{margin-top:12px;font-size:11px;color:var(--mut);display:flex;gap:18px;
-flex-wrap:wrap}
+.foot{margin-top:10px;font-size:11px;color:var(--mut);display:flex;gap:16px;
+flex-wrap:wrap;align-items:center}
 .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px}
 .up{background:var(--pos)}.down{background:var(--neg)}
-.empty{padding:36px;text-align:center;color:var(--mut);background:var(--card);
-border:1px dashed var(--line);border-radius:6px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;
+padding:14px 16px;margin-bottom:12px}
+.card h3{margin:0 0 10px;font-size:12px;font-family:system-ui,sans-serif;
+color:var(--mut);font-weight:600}
+input,select,button{background:#1c1c21;color:var(--fg);border:1px solid var(--line);
+border-radius:4px;padding:5px 9px;font:12px ui-monospace,Menlo,monospace}
+button{cursor:pointer;background:#25252c}
+button:hover{background:#2f2f38}
+button.primary{background:var(--acc);color:#08080a;border-color:var(--acc);
+font-weight:600}
+button.danger{color:var(--neg)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+label{color:var(--mut);font-size:11px;font-family:system-ui,sans-serif}
+.msg{font-size:11px;padding:6px 0;font-family:system-ui,sans-serif}
+.msg.err{color:var(--neg)}.msg.ok{color:var(--pos)}
+.empty{padding:34px;text-align:center;color:var(--mut)}
 """
 
-JS = """
-function tick(){var n=Date.now();
-document.querySelectorAll('[data-cd]').forEach(function(e){
-var d=+e.getAttribute('data-cd')-n; if(!(d>0)){e.textContent='--';return;}
-var s=Math.floor(d/1000),h=Math.floor(s/3600),m=Math.floor(s%3600/60);
-e.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+
-((s%60)<10?'0':'')+(s%60);});}
-setInterval(tick,1000);tick();
+JS = r"""
+var D=null, TAB=localStorage.getItem('tab')||null, SR=null;
+
+function n(v,d,sign,suf){
+  if(v===null||v===undefined||isNaN(v)) return '<span class=mut>--</span>';
+  var c = v>0?'pos':(v<0?'neg':'');
+  var s = (sign&&v>0?'+':'')+Number(v).toFixed(d)+(suf||'');
+  return '<span class="'+c+'">'+s+'</span>';
+}
+function sz(v){ if(v===null||v===undefined) return '--';
+  var a=Math.abs(v);
+  if(a>=1e6) return (v/1e6).toFixed(2)+'M';
+  if(a>=1e3) return (v/1e3).toFixed(2)+'K';
+  return Number(v).toPrecision(4).replace(/\.?0+$/,''); }
+function iv(h){ if(!h) return '?'; return h<1?Math.round(h*60)+'m':(h+'h'); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,
+  function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+
+function load(cb){
+  fetch('/api/latest').then(function(r){return r.json();}).then(function(d){
+    D=d; render(); if(cb)cb();
+  }).catch(function(e){
+    document.getElementById('panes').innerHTML =
+      '<div class=empty>拿不到数据：'+esc(e)+'</div>';
+  });
+}
+
+function render(){
+  if(!D) return;
+  var ps = (D.pairs||[]).slice().sort(function(a,b){
+    return (b.best_prem_pct===null?-999:b.best_prem_pct) -
+           (a.best_prem_pct===null?-999:a.best_prem_pct); });
+  var names = ps.map(function(p){return p.asset;});
+  if(TAB!=='__set__' && names.indexOf(TAB)<0) TAB = names[0]||'__set__';
+  var t = ps.map(function(p){
+    var prem = p.best_prem_pct;
+    var pc = prem===null?'':(prem>0?'pos':'neg');
+    var ptxt = prem===null?'':((prem>0?'+':'')+prem.toFixed(2)+'%');
+    return '<div class="tab'+(TAB===p.asset?' on':'')+'" onclick="go(\''+
+      esc(p.asset)+'\')">'+esc(p.asset)+
+      '<span class="p '+pc+'">'+ptxt+'</span></div>';
+  }).join('');
+  t += '<div class="tab'+(TAB==='__set__'?' on':'')+
+       '" onclick="go(\'__set__\')">⚙ 设置</div>';
+  document.getElementById('tabs').innerHTML = t;
+  document.getElementById('ts').textContent =
+    D.ts ? new Date(D.ts*1000).toISOString().replace('T',' ').slice(0,19)+' UTC' : '--';
+  document.getElementById('health').innerHTML = (D.health||[]).map(function(h){
+    return '<span title="'+esc(h.err||((h.n||0)+' 个合约'))+'"><span class="dot '+
+      (h.ok?'up':'down')+'"></span>'+esc(h.venue)+(h.ok?'':' ✕')+'</span>';
+  }).join(' ');
+  document.getElementById('panes').innerHTML =
+    TAB==='__set__' ? settingsPane() : assetPane(ps.filter(function(p){
+      return p.asset===TAB; })[0]);
+  tick();
+}
+
+function go(t){ TAB=t; localStorage.setItem('tab',t); render(); }
+
+function assetPane(p){
+  if(!p) return '<div class=empty>没有数据</div>';
+  var head = '<div class=head>'+
+    '<div><div class=faint>标的</div><div class=name style="font-size:16px">'+
+      esc(p.stock_name||p.asset)+' <span class=faint>'+esc(p.asset)+'</span></div></div>'+
+    '<div><div class=faint>股价</div><div class=px>'+n(p.stock_price,3)+
+      ' <span class=faint>'+esc(p.ccy||'')+'</span></div></div>'+
+    '<div><div class=faint>汇率</div><div>'+n(p.fx,4)+'</div></div>'+
+    '<div><div class=faint>锚价 USD</div><div class=px>'+n(p.anchor_usd,4)+'</div></div>'+
+    '<div><div class=faint>行情时间</div><div>'+esc(p.quote_time||'--')+'</div></div>'+
+    '<div><div class=faint>资金费净年化</div><div class=px>'+
+      n(p.net_apr,1,1,'%')+'</div><div class=faint>'+
+      esc(p.long_venue||'--')+' → '+esc(p.short_venue||'--')+'</div></div>'+
+    '</div>';
+  var rows = (p.legs||[]).map(function(l){
+    var tag='';
+    if(l.venue===p.long_venue) tag+='<span class="tag t-long">多</span>';
+    if(l.venue===p.short_venue) tag+='<span class="tag t-short">空</span>';
+    if(l.venue===p.best_prem_venue && p.best_prem_pct>0)
+      tag+='<span class="tag t-prem">溢价</span>';
+    var cd = l.next_ts ? '<span data-cd="'+l.next_ts+'">--</span>'
+                       : '<span class=mut>--</span>';
+    return '<tr><td><span class=name>'+esc(l.venue)+'</span>'+tag+'</td>'+
+      '<td class=faint>'+esc(l.symbol)+'</td>'+
+      '<td>'+n(l.last,4)+'</td>'+
+      '<td>'+n(l.premium_pct,2,1,'%')+'</td>'+
+      '<td>'+n(l.rate*100,4,1,'%')+' <span class=faint>/'+iv(l.interval_h)+'</span></td>'+
+      '<td>'+n(l.apr*100,1,1,'%')+'</td>'+
+      '<td>'+cd+'</td>'+
+      '<td>'+n(l.bid,4)+' <span class=faint>× '+sz(l.bid_sz)+'</span></td>'+
+      '<td>'+n(l.ask,4)+' <span class=faint>× '+sz(l.ask_sz)+'</span></td>'+
+      '<td>'+n(l.mark,4)+'</td></tr>';
+  }).join('');
+  var t = p.trailing_24h||{};
+  var foot = '<div class=foot><span>24h 净年化 '+
+    (t.min_net==null?'--':(t.min_net.toFixed(0)+' ~ '+t.max_net.toFixed(0)+'%'))+
+    '</span><span>均值 '+n(t.avg_net,1,1,'%')+'</span>'+
+    '<span>站上 10% 的时间 '+n(t.pct_above,0,0,'%')+'</span>'+
+    '<span>样本 '+(t.n||0)+'</span></div>';
+  return head+'<div class=wrap><table><thead><tr>'+
+    '<th>交易所</th><th>合约</th><th>最新价</th><th>折溢价</th>'+
+    '<th>资金费率/周期</th><th>年化</th><th>结算倒计时</th>'+
+    '<th>买一 × 量</th><th>卖一 × 量</th><th>标记价</th>'+
+    '</tr></thead><tbody>'+rows+'</tbody></table></div>'+foot+
+    '<p class=note><b>折溢价</b> = 永续价 ÷ 锚价 − 1，锚价 = 真实股价 ÷ 汇率。'+
+    '<b>只有溢价（正数）是你能执行的方向</b>：买入现货 + 做空永续；'+
+    '折价需要做空现货，A 股散户做不到。'+
+    '<b>资金费率</b>显示原始单期值与结算周期，右侧是折算后的年化：'+
+    '1 小时结算的 0.01% 相当于 8 小时结算的 0.08%，不折算直接比较是错的。'+
+    '<b>买一/卖一的量</b>决定实际能吃多少——纸面价差如果只有几百 U 深度，'+
+    '扣完滑点就没了。股市休市时锚价是上一个收盘价，此时折溢价会失真，'+
+    '看「行情时间」判断新鲜度。本页仅供研究，不构成投资建议。</p>';
+}
+
+function tick(){
+  var now=Date.now();
+  document.querySelectorAll('[data-cd]').forEach(function(e){
+    var d=+e.getAttribute('data-cd')-now;
+    if(!(d>0)){e.textContent='--';return;}
+    var s=Math.floor(d/1000),h=Math.floor(s/3600),m=Math.floor(s%3600/60),q=s%60;
+    e.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(q<10?'0':'')+q;
+  });
+}
+
+/* ----------------------------------------------------------- 设置页 */
+function settingsPane(){
+  var cur = Object.keys(D.universe||{}).map(function(k){
+    var u=D.universe[k];
+    var und = u.underlying ? (u.underlying.market+' '+u.underlying.code) : '无锚（纯加密）';
+    return '<tr><td><span class=name>'+esc(k)+'</span> <span class=faint>'+
+      esc(u.name||'')+'</span></td><td class=faint>'+esc(und)+'</td>'+
+      '<td class=faint>'+esc(Object.keys(u.venues||{}).join(', '))+'</td>'+
+      '<td><button class=danger onclick="del(\''+esc(k)+'\')">删除</button></td></tr>';
+  }).join('');
+  return '<div class=card><h3>已监控的标的</h3><div class=wrap><table><thead><tr>'+
+    '<th>代号</th><th>锚（股票）</th><th>交易所</th><th></th></tr></thead>'+
+    '<tbody>'+(cur||'<tr><td colspan=4 class=mut>还没有</td></tr>')+
+    '</tbody></table></div></div>'+
+    '<div class=card><h3>添加新标的</h3>'+
+    '<div class=row><label>1. 搜合约</label>'+
+    '<input id=q placeholder="关键词，如 CXMT / UNITREE / BTC" size=28 '+
+    'onkeydown="if(event.key===\'Enter\')doSearch()">'+
+    '<button class=primary onclick="doSearch()">搜索各交易所</button>'+
+    '<span id=smsg class=msg></span></div>'+
+    '<div id=sres></div>'+
+    '<div class=row style="margin-top:12px"><label>2. 锚（可选）</label>'+
+    '<select id=mk><option value="">无锚 · 纯加密标的</option>'+
+    '<option value="A">A 股</option><option value="HK">港股</option>'+
+    '<option value="US">美股</option></select>'+
+    '<input id=code placeholder="股票代码 如 688836" size=12>'+
+    '<button onclick="checkStock()">验证股票</button>'+
+    '<span id=cmsg class=msg></span></div>'+
+    '<div class=row><label>3. 保存为</label>'+
+    '<input id=key placeholder="标的代号 如 CXMT" size=12>'+
+    '<input id=nm placeholder="中文名 如 长鑫科技" size=16>'+
+    '<button class=primary onclick="doAdd()">添加到看板</button>'+
+    '<span id=amsg class=msg></span></div></div>'+
+    '<p class=note>搜索会去各家交易所的合约列表里找名字含关键词的永续合约，'+
+    '勾选你要纳入的那几条。<b>同一标的在各家命名不同</b>'+
+    '（CXMTUSDT / CXMT_USDT / CXMT-USDT-SWAP），所以不要手填，搜出来再勾。'+
+    '<b>验证股票这一步别跳过</b>：股票代码填错不会报错，只会安静地给出一个'+
+    '完全错误的折溢价。</p>';
+}
+
+function doSearch(){
+  var q=document.getElementById('q').value.trim();
+  if(!q) return;
+  document.getElementById('smsg').textContent='搜索中，各家轮一遍要几秒…';
+  document.getElementById('smsg').className='msg';
+  fetch('/api/search?q='+encodeURIComponent(q))
+   .then(function(r){return r.json();}).then(function(d){
+    SR=d.results||[];
+    var m=document.getElementById('smsg');
+    m.textContent='找到 '+SR.length+' 条'+
+      (Object.keys(d.errors||{}).length?('，失败: '+Object.keys(d.errors).join(',')):'');
+    m.className='msg ok';
+    if(!document.getElementById('key').value) document.getElementById('key').value=q.toUpperCase();
+    var seen={};
+    document.getElementById('sres').innerHTML='<div class=wrap><table><thead><tr>'+
+      '<th>选</th><th>交易所</th><th>合约</th><th>单期费率/周期</th>'+
+      '<th>年化</th><th>最新价</th></tr></thead><tbody>'+
+      SR.map(function(r,i){
+        var first=!seen[r.venue]; seen[r.venue]=1;
+        return '<tr><td><input type=checkbox id="c'+i+'"'+(first?' checked':'')+'></td>'+
+          '<td><span class=name>'+esc(r.venue)+'</span></td>'+
+          '<td>'+esc(r.symbol)+'</td>'+
+          '<td>'+n(r.rate*100,4,1,'%')+' <span class=faint>/'+iv(r.interval_h)+'</span></td>'+
+          '<td>'+n(r.apr_pct,1,1,'%')+'</td><td>'+n(r.last,4)+'</td></tr>';
+      }).join('')+'</tbody></table></div>';
+  }).catch(function(e){
+    var m=document.getElementById('smsg'); m.textContent='搜索失败：'+e; m.className='msg err';
+  });
+}
+
+function checkStock(){
+  var mk=document.getElementById('mk').value, code=document.getElementById('code').value.trim();
+  var m=document.getElementById('cmsg');
+  if(!mk||!code){ m.textContent='选市场并填代码'; m.className='msg err'; return; }
+  m.textContent='查询中…'; m.className='msg';
+  fetch('/api/stock?market='+mk+'&code='+encodeURIComponent(code))
+   .then(function(r){return r.json();}).then(function(d){
+    if(d.error){ m.textContent='查不到：'+d.error; m.className='msg err'; return; }
+    m.textContent='✓ '+d.name+' 现价 '+d.price+'（'+d.src+' '+(d.quote_time||'')+'）';
+    m.className='msg ok';
+    if(!document.getElementById('nm').value) document.getElementById('nm').value=d.name||'';
+  });
+}
+
+function doAdd(){
+  var key=document.getElementById('key').value.trim().toUpperCase();
+  var m=document.getElementById('amsg');
+  if(!key){ m.textContent='填标的代号'; m.className='msg err'; return; }
+  var venues={};
+  (SR||[]).forEach(function(r,i){
+    var c=document.getElementById('c'+i);
+    if(c&&c.checked) venues[r.venue]=r.symbol;
+  });
+  if(!Object.keys(venues).length){ m.textContent='先搜索并勾选至少一个合约';
+    m.className='msg err'; return; }
+  var mk=document.getElementById('mk').value, code=document.getElementById('code').value.trim();
+  m.textContent='保存中…'; m.className='msg';
+  fetch('/api/universe/add',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({key:key,name:document.getElementById('nm').value.trim(),
+      underlying: mk&&code?{market:mk,code:code}:null, venues:venues})})
+   .then(function(r){return r.json();}).then(function(d){
+    if(d.error){ m.textContent='失败：'+d.error; m.className='msg err'; return; }
+    m.textContent='✓ 已添加，下一轮采集（最多 '+(D.poll_sec||300)+' 秒）后出现在标签页上';
+    m.className='msg ok';
+    load();
+  });
+}
+
+function del(k){
+  if(!confirm('从看板移除 '+k+'？历史数据保留，只是不再采集。')) return;
+  fetch('/api/universe/remove',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})})
+   .then(function(){ if(TAB===k) TAB='__set__'; load(); });
+}
+
+setInterval(function(){ load(); }, 60000);
+setInterval(tick, 1000);
+load();
 """
 
-NOTE_SUM = """<b>折溢价</b> = 永续价 ÷ 锚价 − 1，锚价 = 真实股价 ÷ 汇率。
-<b>只有溢价（正数）是你能执行的方向</b>：买入现货 + 做空永续；
-折价需要做空现货，A 股散户做不到，所以折价只作记录。
-<b>净年化</b> = 资金费最高的所（做空）− 最低的所（做多），已按各家真实结算周期折算；
-两条腿各占保证金，对总投入资金的实际年化约为其一半。数值均未扣手续费与滑点。
-标的与永续的交易时段不同，股市休市时锚价是上一个收盘价，此时的折溢价会失真——
-看「行情时间」判断新鲜度。本页仅供研究，不构成投资建议。"""
 
-NOTE_DET = """每行一家交易所。<b>资金费率</b>显示原始单期值与结算周期，右侧是折算后的年化：
-1 小时结算的 0.01% 相当于 8 小时结算的 0.08%，不折算直接比较是错的。
-<b>买一/卖一</b>的量决定你实际能吃多少——这是套利计算的必需项，
-纸面上的价差如果只有几百 U 的深度，扣完滑点就没了。
-<b>倒计时</b>是距下次资金费结算的时间，只有持仓到那一刻才收得到（或付得出）。
-本页仅供研究，不构成投资建议。"""
-
-
-def _f(v, d=2, sign=False, suffix=""):
-    if v is None:
-        return '<span class=mut>--</span>'
-    cls = "pos" if v > 0 else ("neg" if v < 0 else "")
-    fmt = "%+." + str(d) + "f" if sign else "%." + str(d) + "f"
-    return '<span class="%s">%s%s</span>' % (cls, fmt % v, suffix)
-
-
-def _sz(v):
-    if v is None:
-        return "--"
-    for unit, div in (("M", 1e6), ("K", 1e3)):
-        if abs(v) >= div:
-            return "%.2f%s" % (v / div, unit)
-    return "%.4g" % v
-
-
-def _iv(h):
-    if not h:
-        return "?"
-    return "%dm" % round(h * 60) if h < 1 else "%gh" % h
-
-
-def _shell(title, body, extra_head=""):
+def shell():
     return ("<!doctype html><html lang=zh><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<title>%s</title><style>%s</style>%s%s"
-            "<script>%s</script></html>"
-            % (title, CSS, extra_head, body, JS))
+            "<title>Funding Radar</title><style>" + CSS + "</style>"
+            "<div class=top><h1>跨市场折溢价 / 资金费雷达</h1>"
+            "<span class=sub>最近一轮 <span id=ts>--</span> · 每 60 秒刷新</span></div>"
+            "<div class=tabs id=tabs></div><div id=panes></div>"
+            "<div class=foot><span>数据源 <span id=health></span></span></div>"
+            "<noscript><p class=note>这个页面需要 JavaScript。</p></noscript>"
+            "<script>" + JS + "</script></html>")
 
 
-def _health_bar():
-    hs = store.latest_health()
-    return " ".join(
-        '<span><span class="dot %s"></span>%s</span>' % (
-            "up" if h["ok"] else "down", html.escape(h["venue"]))
-        for h in sorted(hs, key=lambda x: CANON.index(x["venue"])
-                        if x["venue"] in CANON else 99))
-
-
-# --------------------------------------------------------------- 汇总页
-def render():
+def api_latest(poll_sec=300):
     ts, pairs = store.latest_pairs()
-    if not pairs:
-        return _shell("Funding Radar", "<h1>跨市场折溢价 / 资金费雷达</h1>"
-                      "<div class=empty>还没有数据。先用 "
-                      "<code>python -m app.discover CXMT</code> 找符号，"
-                      "填进 config/universe.json，等下一轮采集。</div>")
-    rows = []
-    for p in sorted(pairs, key=lambda x: -(x["best_prem_pct"] or -999)):
-        a = html.escape(p["asset"])
-        stock = ("%s <span class=faint>%s %s</span>" % (
-            _f(p["stock_price"], 3), p["ccy"] or "", p["quote_time"] or "")
-            if p["stock_price"] else '<span class=mut>--</span>')
-        rows.append(
-            "<tr><td><a href='/a/%s'><span class=name>%s</span></a>"
-            " <span class=faint>%s</span></td>"
-            "<td>%s</td><td>%s</td>"
-            "<td>%s <span class=faint>%s</span></td>"
-            "<td>%s <span class=faint>%s</span></td>"
-            "<td class=big>%s</td>"
-            "<td class=faint>%s→%s</td>"
-            "<td>%s</td><td class=faint>%d</td></tr>" % (
-                urllib.parse.quote(p["asset"]), a,
-                html.escape(p["stock_name"] or ""),
-                stock, _f(p["anchor_usd"], 4),
-                _f(p["best_prem_pct"], 2, sign=True, suffix="%"),
-                html.escape(p["best_prem_venue"] or ""),
-                _f(p["worst_prem_pct"], 2, sign=True, suffix="%"),
-                html.escape(p["worst_prem_venue"] or ""),
-                _f(p["net_apr"], 1, sign=True, suffix="%"),
-                html.escape(p["long_venue"] or "--"),
-                html.escape(p["short_venue"] or "--"),
-                _f(p["mark_spread_pct"], 3, sign=True, suffix="%"),
-                p["n_legs"]))
-    body = ("<h1>跨市场折溢价 / 资金费雷达</h1>"
-            "<div class=sub>%s UTC · 每 60 秒自动刷新 · 点标的看明细</div>"
-            "<div class=wrap><table><thead><tr>"
-            "<th>标的</th><th>股价</th><th>锚价 USD</th>"
-            "<th>最高溢价</th><th>最低溢价</th>"
-            "<th>资金费净年化</th><th>多→空</th><th>标记价差</th><th>腿</th>"
-            "</tr></thead><tbody>%s</tbody></table></div>"
-            "<div class=foot><span>数据源 %s</span></div>"
-            "<p class=note>%s</p>" % (
-                time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)),
-                "".join(rows), _health_bar(), NOTE_SUM.replace("\n", " ")))
-    return _shell("Funding Radar", body,
-                  "<meta http-equiv=refresh content=60>")
-
-
-# --------------------------------------------------------------- 明细页
-def render_asset(asset):
-    ts, pairs = store.latest_pairs()
-    p = next((x for x in pairs if x["asset"] == asset), None)
-    if not p:
-        return _shell("未找到", "<h1>没有这个标的</h1>"
-                      "<p><a href='/'>返回汇总</a></p>")
-    legs = store.latest_legs(asset)
-    order = {v: i for i, v in enumerate(CANON)}
-    legs.sort(key=lambda l: order.get(l["venue"], 99))
-
-    rows = []
-    for l in legs:
-        tags = ""
-        if l["venue"] == p["long_venue"]:
-            tags += '<span class="tag t-long">多</span>'
-        if l["venue"] == p["short_venue"]:
-            tags += '<span class="tag t-short">空</span>'
-        if l["venue"] == p["best_prem_venue"] and (p["best_prem_pct"] or 0) > 0:
-            tags += '<span class="tag t-prem">溢价</span>'
-        cd = ('<span data-cd="%d">--</span>' % l["next_ts"]
-              if l.get("next_ts") else '<span class=mut>--</span>')
-        rows.append(
-            "<tr><td><span class=name>%s</span>%s</td>"
-            "<td class=faint>%s</td><td>%s</td><td>%s</td>"
-            "<td>%s <span class=faint>/%s</span></td><td>%s</td><td>%s</td>"
-            "<td>%s <span class=faint>× %s</span></td>"
-            "<td>%s <span class=faint>× %s</span></td><td>%s</td></tr>" % (
-                html.escape(l["venue"]), tags, html.escape(l["symbol"]),
-                _f(l["last"], 4), _f(l["premium_pct"], 2, sign=True, suffix="%"),
-                _f((l["rate"] or 0) * 100, 4, sign=True, suffix="%"),
-                _iv(l["interval_h"]),
-                _f(l["apr"] * 100 if l["apr"] is not None else None, 1,
-                   sign=True, suffix="%"),
-                cd,
-                _f(l["bid"], 4), _sz(l["bid_sz"]),
-                _f(l["ask"], 4), _sz(l["ask_sz"]),
-                _f(l["mark"], 4)))
-
-    head = ("<div class=head>"
-            "<div><div class=faint>标的</div>"
-            "<div class=name style='font-size:17px'>%s <span class=faint>%s</span>"
-            "</div></div>"
-            "<div><div class=faint>股价</div><div class=px>%s</div></div>"
-            "<div><div class=faint>汇率 %s</div><div>%s</div></div>"
-            "<div><div class=faint>锚价 USD</div><div class=px>%s</div></div>"
-            "<div><div class=faint>行情时间</div><div>%s</div></div>"
-            "<div style='margin-left:auto'><a href='/'>← 汇总</a></div>"
-            "</div>" % (
-                html.escape(p["stock_name"] or asset), html.escape(asset),
-                _f(p["stock_price"], 3), p["ccy"] or "--", _f(p["fx"], 4),
-                _f(p["anchor_usd"], 4),
-                html.escape(p["quote_time"] or "--")))
-
-    body = ("<h1>%s</h1><div class=sub>%s UTC · 每 60 秒自动刷新</div>%s"
-            "<div class=wrap><table><thead><tr>"
-            "<th>交易所</th><th>合约</th><th>最新价</th><th>折溢价</th>"
-            "<th>资金费率/周期</th><th>年化</th><th>结算倒计时</th>"
-            "<th>买一 × 量</th><th>卖一 × 量</th><th>标记价</th>"
-            "</tr></thead><tbody>%s</tbody></table></div>"
-            "<div class=foot><span>数据源 %s</span></div>"
-            "<p class=note>%s</p>" % (
-                html.escape(asset),
-                time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)),
-                head, "".join(rows), _health_bar(),
-                NOTE_DET.replace("\n", " ")))
-    return _shell(asset + " · Funding Radar", body,
-                  "<meta http-equiv=refresh content=60>")
-
-
-def api_latest():
-    ts, pairs = store.latest_pairs()
+    uni, _ = uni_store.parsed()
     out = []
     for p in pairs:
         d = dict(p)
         d["legs"] = store.latest_legs(p["asset"])
         d["trailing_24h"] = store.trailing(p["asset"], hours=24)
         out.append(d)
-    return json.dumps({"ts": ts, "pairs": out,
+    return json.dumps({"ts": ts, "pairs": out, "universe": uni,
+                       "poll_sec": poll_sec,
                        "health": store.latest_health()},
-                      ensure_ascii=False, indent=2)
+                      ensure_ascii=False)
+
+
+def api_search(q):
+    rows, errs = venues.search(q)
+    return json.dumps({"results": rows, "errors": errs}, ensure_ascii=False)
+
+
+def api_stock(market, code):
+    q = quotes.stock_price(market, code)
+    if not q:
+        return json.dumps({"error": "没查到 %s %s" % (market, code)},
+                          ensure_ascii=False)
+    return json.dumps(q, ensure_ascii=False)
