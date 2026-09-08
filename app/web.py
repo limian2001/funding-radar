@@ -20,11 +20,13 @@ h1{font-size:15px;margin:0;font-family:system-ui,sans-serif}
 .sub{color:var(--mut);font-size:11px}
 .tabs{display:flex;gap:2px;flex-wrap:wrap;border-bottom:1px solid var(--line);
 margin-bottom:12px}
-.tab{padding:6px 14px;cursor:pointer;color:var(--mut);border:1px solid transparent;
+.tab{padding:6px 14px;cursor:grab;color:var(--mut);border:1px solid transparent;
 border-bottom:none;border-radius:5px 5px 0 0;font-family:system-ui,sans-serif;
 font-size:12px;user-select:none;position:relative;top:1px}
 .tab:hover{color:var(--fg)}
 .tab.on{background:var(--card);border-color:var(--line);color:var(--fg)}
+.tab:active{cursor:grabbing}
+.tab .p.mut{opacity:.6}
 .tab .p{font-size:10px;margin-left:6px}
 .wrap{overflow-x:auto}
 table{border-collapse:collapse;background:var(--card);border:1px solid var(--line);
@@ -73,13 +75,12 @@ label{color:var(--mut);font-size:11px;font-family:system-ui,sans-serif}
 """
 
 JS = r"""
-var D=null, TAB=localStorage.getItem('tab')||null, SR=null;
+var D=null, TAB=localStorage.getItem('tab')||null, SR=null, DRAG=null;
 
 function n(v,d,sign,suf){
   if(v===null||v===undefined||isNaN(v)) return '<span class=mut>--</span>';
   var c = v>0?'pos':(v<0?'neg':'');
-  var s = (sign&&v>0?'+':'')+Number(v).toFixed(d)+(suf||'');
-  return '<span class="'+c+'">'+s+'</span>';
+  return '<span class="'+c+'">'+((sign&&v>0?'+':'')+Number(v).toFixed(d)+(suf||''))+'</span>';
 }
 function sz(v){ if(v===null||v===undefined) return '--';
   var a=Math.abs(v);
@@ -87,8 +88,8 @@ function sz(v){ if(v===null||v===undefined) return '--';
   if(a>=1e3) return (v/1e3).toFixed(2)+'K';
   return Number(v).toPrecision(4).replace(/\.?0+$/,''); }
 function iv(h){ if(!h) return '?'; return h<1?Math.round(h*60)+'m':(h+'h'); }
-function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,
-  function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,
+  function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
 
 function load(cb){
   fetch('/api/latest').then(function(r){return r.json();}).then(function(d){
@@ -99,90 +100,148 @@ function load(cb){
   });
 }
 
+/* 标签来源 = 标的清单（加了立刻出现）∪ 已有数据的标的，
+   顺序由服务端保存的 _order 决定，可拖拽调整 */
+function items(){
+  var byName={}; (D.pairs||[]).forEach(function(p){byName[p.asset]=p;});
+  var order=(D.order||[]).slice();
+  Object.keys(D.universe||{}).forEach(function(k){
+    if(order.indexOf(k)<0) order.push(k); });
+  (D.pairs||[]).forEach(function(p){
+    if(order.indexOf(p.asset)<0) order.push(p.asset); });
+  return order.map(function(k){
+    return {key:k, pair:byName[k]||null, cfg:(D.universe||{})[k]||null}; });
+}
+
 function render(){
   if(!D) return;
-  var ps = (D.pairs||[]).slice().sort(function(a,b){
-    return (b.best_prem_pct===null?-999:b.best_prem_pct) -
-           (a.best_prem_pct===null?-999:a.best_prem_pct); });
-  var names = ps.map(function(p){return p.asset;});
-  if(TAB!=='__set__' && names.indexOf(TAB)<0) TAB = names[0]||'__set__';
-  var t = ps.map(function(p){
-    var prem = p.best_prem_pct;
-    var pc = prem===null?'':(prem>0?'pos':'neg');
-    var ptxt = prem===null?'':((prem>0?'+':'')+prem.toFixed(2)+'%');
-    return '<div class="tab'+(TAB===p.asset?' on':'')+'" onclick="go(\''+
-      esc(p.asset)+'\')">'+esc(p.asset)+
+  var its=items(), keys=its.map(function(i){return i.key;});
+  if(TAB!=='__set__' && keys.indexOf(TAB)<0) TAB = keys[0]||'__set__';
+  document.getElementById('tabs').innerHTML = its.map(function(i){
+    var prem = i.pair ? i.pair.best_prem_pct : null;
+    var pc = (prem===null||prem===undefined)?'mut':(prem>0?'pos':'neg');
+    var ptxt = (prem===null||prem===undefined)?'…'
+               :((prem>0?'+':'')+prem.toFixed(2)+'%');
+    return '<div class="tab'+(TAB===i.key?' on':'')+'" draggable="true" '+
+      'data-key="'+esc(i.key)+'">'+esc(i.key)+
       '<span class="p '+pc+'">'+ptxt+'</span></div>';
-  }).join('');
-  t += '<div class="tab'+(TAB==='__set__'?' on':'')+
-       '" onclick="go(\'__set__\')">⚙ 设置</div>';
-  document.getElementById('tabs').innerHTML = t;
-  document.getElementById('ts').textContent =
-    D.ts ? new Date(D.ts*1000).toISOString().replace('T',' ').slice(0,19)+' UTC' : '--';
+  }).join('') + '<div class="tab'+(TAB==='__set__'?' on':'')+
+      '" data-key="__set__">⚙ 设置</div>';
+  document.getElementById('ts').textContent = D.ts
+    ? new Date(D.ts*1000).toISOString().replace('T',' ').slice(0,19)+' UTC' : '--';
   document.getElementById('health').innerHTML = (D.health||[]).map(function(h){
     return '<span title="'+esc(h.err||((h.n||0)+' 个合约'))+'"><span class="dot '+
       (h.ok?'up':'down')+'"></span>'+esc(h.venue)+(h.ok?'':' ✕')+'</span>';
   }).join(' ');
-  document.getElementById('panes').innerHTML =
-    TAB==='__set__' ? settingsPane() : assetPane(ps.filter(function(p){
-      return p.asset===TAB; })[0]);
+  var cur = its.filter(function(i){return i.key===TAB;})[0];
+  // 单个标的的数据有问题时，只让那一格报错，不能让整个界面卡住不切换
+  try{
+    document.getElementById('panes').innerHTML =
+      TAB==='__set__' ? settingsPane() : assetPane(cur);
+  }catch(err){
+    document.getElementById('panes').innerHTML =
+      '<div class=empty>这个标的渲染出错了：'+esc(err&&err.message||err)+
+      '<br><br>把这行发给我，我照着修。</div>';
+  }
   tick();
 }
 
 function go(t){ TAB=t; localStorage.setItem('tab',t); render(); }
 
-function assetPane(p){
-  if(!p) return '<div class=empty>没有数据</div>';
+/* 事件委托：标签是重绘出来的，不能挂内联 onclick */
+document.addEventListener('click', function(e){
+  var t=e.target.closest && e.target.closest('.tab');
+  if(t && t.dataset.key) go(t.dataset.key);
+});
+document.addEventListener('dragstart', function(e){
+  var t=e.target.closest && e.target.closest('.tab');
+  if(t && t.dataset.key!=='__set__'){ DRAG=t.dataset.key;
+    e.dataTransfer.effectAllowed='move'; }
+});
+document.addEventListener('dragover', function(e){
+  if(DRAG && e.target.closest && e.target.closest('.tab')) e.preventDefault();
+});
+document.addEventListener('drop', function(e){
+  var t=e.target.closest && e.target.closest('.tab');
+  if(!DRAG || !t || !t.dataset.key || t.dataset.key==='__set__') return;
+  e.preventDefault();
+  var order=items().map(function(i){return i.key;});
+  var from=order.indexOf(DRAG), to=order.indexOf(t.dataset.key);
+  if(from<0||to<0||from===to){DRAG=null;return;}
+  order.splice(to,0,order.splice(from,1)[0]);
+  D.order=order; DRAG=null; render();
+  fetch('/api/universe/order',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({order:order})});
+});
+
+function assetPane(it){
+  if(!it) return '<div class=empty>没有数据</div>';
+  var p=it.pair, cfg=it.cfg||{};
+  var waiting = !p || !p.legs || !p.legs.length;
   var head = '<div class=head>'+
     '<div><div class=faint>标的</div><div class=name style="font-size:16px">'+
-      esc(p.stock_name||p.asset)+' <span class=faint>'+esc(p.asset)+'</span></div></div>'+
-    '<div><div class=faint>股价</div><div class=px>'+n(p.stock_price,3)+
-      ' <span class=faint>'+esc(p.ccy||'')+'</span></div></div>'+
-    '<div><div class=faint>汇率</div><div>'+n(p.fx,4)+'</div></div>'+
-    '<div><div class=faint>锚价 USD</div><div class=px>'+n(p.anchor_usd,4)+'</div></div>'+
-    '<div><div class=faint>行情时间</div><div>'+esc(p.quote_time||'--')+'</div></div>'+
-    '<div><div class=faint>资金费净年化</div><div class=px>'+
-      n(p.net_apr,1,1,'%')+'</div><div class=faint>'+
-      esc(p.long_venue||'--')+' → '+esc(p.short_venue||'--')+'</div></div>'+
-    '</div>';
-  var rows = (p.legs||[]).map(function(l){
-    var tag='';
-    if(l.venue===p.long_venue) tag+='<span class="tag t-long">多</span>';
-    if(l.venue===p.short_venue) tag+='<span class="tag t-short">空</span>';
-    if(l.venue===p.best_prem_venue && p.best_prem_pct>0)
-      tag+='<span class="tag t-prem">溢价</span>';
-    var cd = l.next_ts ? '<span data-cd="'+l.next_ts+'">--</span>'
-                       : '<span class=mut>--</span>';
-    return '<tr><td><span class=name>'+esc(l.venue)+'</span>'+tag+'</td>'+
-      '<td class=faint>'+esc(l.symbol)+'</td>'+
-      '<td>'+n(l.last,4)+'</td>'+
-      '<td>'+n(l.premium_pct,2,1,'%')+'</td>'+
-      '<td>'+n(l.rate*100,4,1,'%')+' <span class=faint>/'+iv(l.interval_h)+'</span></td>'+
-      '<td>'+n(l.apr*100,1,1,'%')+'</td>'+
-      '<td>'+cd+'</td>'+
-      '<td>'+n(l.bid,4)+' <span class=faint>× '+sz(l.bid_sz)+'</span></td>'+
-      '<td>'+n(l.ask,4)+' <span class=faint>× '+sz(l.ask_sz)+'</span></td>'+
-      '<td>'+n(l.mark,4)+'</td></tr>';
-  }).join('');
-  var t = p.trailing_24h||{};
-  var foot = '<div class=foot><span>24h 净年化 '+
+      esc((p&&p.stock_name)||cfg.name||it.key)+
+      ' <span class=faint>'+esc(it.key)+'</span></div></div>'+
+    '<div><div class=faint>股价</div><div class=px>'+n(p&&p.stock_price,3)+
+      ' <span class=faint>'+esc((p&&p.ccy)||'')+'</span></div></div>'+
+    '<div><div class=faint>汇率</div><div>'+n(p&&p.fx,4)+'</div></div>'+
+    '<div><div class=faint>锚价 USD</div><div class=px>'+n(p&&p.anchor_usd,4)+'</div></div>'+
+    '<div><div class=faint>行情时间</div><div>'+esc((p&&p.quote_time)||'--')+'</div></div>'+
+    '<div><div class=faint>资金费净年化</div><div class=px>'+n(p&&p.net_apr,1,1,'%')+
+      '</div><div class=faint>'+esc((p&&p.long_venue)||'--')+' → '+
+      esc((p&&p.short_venue)||'--')+'</div></div></div>';
+
+  var rows;
+  if(waiting){
+    // 新加的标的：先把配置里的交易所列出来占位，数据下一轮补上
+    rows = Object.keys(cfg.venues||{}).map(function(v){
+      return '<tr><td><span class=name>'+esc(v)+'</span></td>'+
+        '<td class=faint>'+esc(cfg.venues[v])+'</td>'+
+        '<td colspan=8 class=mut>采集中…</td></tr>';
+    }).join('') || '<tr><td colspan=10 class=mut>采集中…</td></tr>';
+  } else {
+    rows = p.legs.map(function(l){
+      var tag='';
+      if(l.venue===p.long_venue) tag+='<span class="tag t-long" title="在这家做多">多</span>';
+      if(l.venue===p.short_venue) tag+='<span class="tag t-short" title="在这家做空">空</span>';
+      if(l.venue===p.best_prem_venue && p.best_prem_pct>0)
+        tag+='<span class="tag t-prem" title="溢价最高">溢价</span>';
+      var cd = l.next_ts ? '<span data-cd="'+l.next_ts+'">--</span>'
+                         : '<span class=mut>--</span>';
+      return '<tr><td><span class=name>'+esc(l.venue)+'</span>'+tag+'</td>'+
+        '<td class=faint>'+esc(l.symbol)+'</td><td>'+n(l.last,4)+'</td>'+
+        '<td>'+n(l.premium_pct,2,1,'%')+'</td>'+
+        '<td>'+n(l.rate*100,4,1,'%')+' <span class=faint>/'+iv(l.interval_h)+'</span></td>'+
+        '<td>'+n(l.apr*100,1,1,'%')+'</td><td>'+cd+'</td>'+
+        '<td>'+n(l.bid,4)+' <span class=faint>× '+sz(l.bid_sz)+'</span></td>'+
+        '<td>'+n(l.ask,4)+' <span class=faint>× '+sz(l.ask_sz)+'</span></td>'+
+        '<td>'+n(l.mark,4)+'</td></tr>';
+    }).join('');
+  }
+  var t=(p&&p.trailing_24h)||{};
+  var foot='<div class=foot><span>24h 净年化 '+
     (t.min_net==null?'--':(t.min_net.toFixed(0)+' ~ '+t.max_net.toFixed(0)+'%'))+
-    '</span><span>均值 '+n(t.avg_net,1,1,'%')+'</span>'+
-    '<span>站上 10% 的时间 '+n(t.pct_above,0,0,'%')+'</span>'+
-    '<span>样本 '+(t.n||0)+'</span></div>';
+    '</span><span>均值 '+n(t.avg_net,1,1,'%')+'</span><span>站上 10% 的时间 '+
+    n(t.pct_above,0,0,'%')+'</span><span>样本 '+(t.n||0)+'</span></div>';
   return head+'<div class=wrap><table><thead><tr>'+
     '<th>交易所</th><th>合约</th><th>最新价</th><th>折溢价</th>'+
     '<th>资金费率/周期</th><th>年化</th><th>结算倒计时</th>'+
     '<th>买一 × 量</th><th>卖一 × 量</th><th>标记价</th>'+
     '</tr></thead><tbody>'+rows+'</tbody></table></div>'+foot+
-    '<p class=note><b>折溢价</b> = 永续价 ÷ 锚价 − 1，锚价 = 真实股价 ÷ 汇率。'+
-    '<b>只有溢价（正数）是你能执行的方向</b>：买入现货 + 做空永续；'+
+    '<p class=note><b>「多」「空」是程序给出的建仓方向</b>：'+
+    '「多」标在资金费率最低（最负）的那家——在那边开多仓，是收资金费的一方；'+
+    '「空」标在费率最高（最正）的那家——在那边开空仓，同样是收钱的一方。'+
+    '两条腿同时持有，价格方向基本对冲掉，净收 = 空腿年化 − 多腿年化，'+
+    '也就是表头那个「资金费净年化」。<br>'+
+    '<b>折溢价</b> = 永续价 ÷ 锚价 − 1，锚价 = 真实股价 ÷ 汇率。'+
+    '只有溢价（正数）是你能执行的方向：买入现货 + 做空永续；'+
     '折价需要做空现货，A 股散户做不到。'+
-    '<b>资金费率</b>显示原始单期值与结算周期，右侧是折算后的年化：'+
-    '1 小时结算的 0.01% 相当于 8 小时结算的 0.08%，不折算直接比较是错的。'+
-    '<b>买一/卖一的量</b>决定实际能吃多少——纸面价差如果只有几百 U 深度，'+
-    '扣完滑点就没了。股市休市时锚价是上一个收盘价，此时折溢价会失真，'+
-    '看「行情时间」判断新鲜度。本页仅供研究，不构成投资建议。</p>';
+    '<b>资金费率</b>左边是原始单期值与结算周期，右边是折算后的年化：'+
+    '1 小时结算的 0.01% 相当于 8 小时结算的 0.08%。'+
+    '<b>买一/卖一的量</b>决定实际能吃多少。股市休市时锚价是上一个收盘价，'+
+    '折溢价会失真，看「行情时间」判断新鲜度。'+
+    '本页仅供研究，不构成投资建议。</p>';
 }
 
 function tick(){
@@ -197,25 +256,24 @@ function tick(){
 
 /* ----------------------------------------------------------- 设置页 */
 function settingsPane(){
-  var cur = Object.keys(D.universe||{}).map(function(k){
-    var u=D.universe[k];
+  var cur = items().filter(function(i){return i.cfg;}).map(function(i){
+    var u=i.cfg;
     var und = u.underlying ? (u.underlying.market+' '+u.underlying.code) : '无锚（纯加密）';
-    return '<tr><td><span class=name>'+esc(k)+'</span> <span class=faint>'+
+    return '<tr><td><span class=name>'+esc(i.key)+'</span> <span class=faint>'+
       esc(u.name||'')+'</span></td><td class=faint>'+esc(und)+'</td>'+
       '<td class=faint>'+esc(Object.keys(u.venues||{}).join(', '))+'</td>'+
-      '<td><button class=danger onclick="del(\''+esc(k)+'\')">删除</button></td></tr>';
+      '<td><button class=danger data-del="'+esc(i.key)+'">删除</button></td></tr>';
   }).join('');
-  return '<div class=card><h3>已监控的标的</h3><div class=wrap><table><thead><tr>'+
-    '<th>代号</th><th>锚（股票）</th><th>交易所</th><th></th></tr></thead>'+
-    '<tbody>'+(cur||'<tr><td colspan=4 class=mut>还没有</td></tr>')+
-    '</tbody></table></div></div>'+
+  return '<div class=card><h3>已监控的标的 · 标签栏可直接拖动排序</h3>'+
+    '<div class=wrap><table><thead><tr><th>代号</th><th>锚（股票）</th>'+
+    '<th>交易所</th><th></th></tr></thead><tbody>'+
+    (cur||'<tr><td colspan=4 class=mut>还没有</td></tr>')+'</tbody></table></div></div>'+
     '<div class=card><h3>添加新标的</h3>'+
     '<div class=row><label>1. 搜合约</label>'+
-    '<input id=q placeholder="关键词，如 CXMT / UNITREE / BTC" size=28 '+
+    '<input id=q placeholder="关键词，如 MEITUAN / CXMT / BTC（大小写都行）" size=32 '+
     'onkeydown="if(event.key===\'Enter\')doSearch()">'+
     '<button class=primary onclick="doSearch()">搜索各交易所</button>'+
-    '<span id=smsg class=msg></span></div>'+
-    '<div id=sres></div>'+
+    '<span id=smsg class=msg></span></div><div id=sres></div>'+
     '<div class=row style="margin-top:12px"><label>2. 锚（可选）</label>'+
     '<select id=mk><option value="">无锚 · 纯加密标的</option>'+
     '<option value="A">A 股</option><option value="HK">港股</option>'+
@@ -228,45 +286,48 @@ function settingsPane(){
     '<input id=nm placeholder="中文名 如 长鑫科技" size=16>'+
     '<button class=primary onclick="doAdd()">添加到看板</button>'+
     '<span id=amsg class=msg></span></div></div>'+
-    '<p class=note>搜索会去各家交易所的合约列表里找名字含关键词的永续合约，'+
-    '勾选你要纳入的那几条。<b>同一标的在各家命名不同</b>'+
-    '（CXMTUSDT / CXMT_USDT / CXMT-USDT-SWAP），所以不要手填，搜出来再勾。'+
-    '<b>验证股票这一步别跳过</b>：股票代码填错不会报错，只会安静地给出一个'+
-    '完全错误的折溢价。</p>';
+    '<p class=note>搜索会去各家交易所的合约列表里找名字含关键词的永续合约。'+
+    '<b>同一标的在各家命名不同</b>（CXMTUSDT / CXMT_USDT / CXMT-USDT-SWAP），'+
+    '所以不要手填，搜出来再勾。<b>验证股票这一步别跳过</b>：'+
+    '代码填错不会报错，只会安静地给出一个完全错误的折溢价。'+
+    '添加后标签立即出现，数据在下一轮采集补上（已自动催了一次）。</p>';
 }
+
+document.addEventListener('click', function(e){
+  var b=e.target.closest && e.target.closest('[data-del]');
+  if(b) del(b.dataset.del);
+});
 
 function doSearch(){
   var q=document.getElementById('q').value.trim();
   if(!q) return;
-  document.getElementById('smsg').textContent='搜索中，各家轮一遍要几秒…';
-  document.getElementById('smsg').className='msg';
+  var m=document.getElementById('smsg');
+  m.textContent='搜索中，各家轮一遍要几秒…'; m.className='msg';
   fetch('/api/search?q='+encodeURIComponent(q))
    .then(function(r){return r.json();}).then(function(d){
     SR=d.results||[];
-    var m=document.getElementById('smsg');
     m.textContent='找到 '+SR.length+' 条'+
       (Object.keys(d.errors||{}).length?('，失败: '+Object.keys(d.errors).join(',')):'');
     m.className='msg ok';
-    if(!document.getElementById('key').value) document.getElementById('key').value=q.toUpperCase();
+    if(!document.getElementById('key').value)
+      document.getElementById('key').value=q.toUpperCase();
     var seen={};
     document.getElementById('sres').innerHTML='<div class=wrap><table><thead><tr>'+
-      '<th>选</th><th>交易所</th><th>合约</th><th>单期费率/周期</th>'+
-      '<th>年化</th><th>最新价</th></tr></thead><tbody>'+
-      SR.map(function(r,i){
+      '<th>选</th><th>交易所</th><th>合约</th><th>单期费率/周期</th><th>年化</th>'+
+      '<th>最新价</th></tr></thead><tbody>'+SR.map(function(r,i){
         var first=!seen[r.venue]; seen[r.venue]=1;
         return '<tr><td><input type=checkbox id="c'+i+'"'+(first?' checked':'')+'></td>'+
-          '<td><span class=name>'+esc(r.venue)+'</span></td>'+
-          '<td>'+esc(r.symbol)+'</td>'+
+          '<td><span class=name>'+esc(r.venue)+'</span></td><td>'+esc(r.symbol)+'</td>'+
           '<td>'+n(r.rate*100,4,1,'%')+' <span class=faint>/'+iv(r.interval_h)+'</span></td>'+
           '<td>'+n(r.apr_pct,1,1,'%')+'</td><td>'+n(r.last,4)+'</td></tr>';
       }).join('')+'</tbody></table></div>';
   }).catch(function(e){
-    var m=document.getElementById('smsg'); m.textContent='搜索失败：'+e; m.className='msg err';
-  });
+    m.textContent='搜索失败：'+e; m.className='msg err'; });
 }
 
 function checkStock(){
-  var mk=document.getElementById('mk').value, code=document.getElementById('code').value.trim();
+  var mk=document.getElementById('mk').value;
+  var code=document.getElementById('code').value.trim();
   var m=document.getElementById('cmsg');
   if(!mk||!code){ m.textContent='选市场并填代码'; m.className='msg err'; return; }
   m.textContent='查询中…'; m.className='msg';
@@ -275,7 +336,8 @@ function checkStock(){
     if(d.error){ m.textContent='查不到：'+d.error; m.className='msg err'; return; }
     m.textContent='✓ '+d.name+' 现价 '+d.price+'（'+d.src+' '+(d.quote_time||'')+'）';
     m.className='msg ok';
-    if(!document.getElementById('nm').value) document.getElementById('nm').value=d.name||'';
+    if(!document.getElementById('nm').value)
+      document.getElementById('nm').value=d.name||'';
   });
 }
 
@@ -286,20 +348,21 @@ function doAdd(){
   var venues={};
   (SR||[]).forEach(function(r,i){
     var c=document.getElementById('c'+i);
-    if(c&&c.checked) venues[r.venue]=r.symbol;
-  });
-  if(!Object.keys(venues).length){ m.textContent='先搜索并勾选至少一个合约';
-    m.className='msg err'; return; }
-  var mk=document.getElementById('mk').value, code=document.getElementById('code').value.trim();
+    if(c&&c.checked) venues[r.venue]=r.symbol; });
+  if(!Object.keys(venues).length){
+    m.textContent='先搜索并勾选至少一个合约'; m.className='msg err'; return; }
+  var mk=document.getElementById('mk').value;
+  var code=document.getElementById('code').value.trim();
   m.textContent='保存中…'; m.className='msg';
   fetch('/api/universe/add',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({key:key,name:document.getElementById('nm').value.trim(),
       underlying: mk&&code?{market:mk,code:code}:null, venues:venues})})
    .then(function(r){return r.json();}).then(function(d){
     if(d.error){ m.textContent='失败：'+d.error; m.className='msg err'; return; }
-    m.textContent='✓ 已添加，下一轮采集（最多 '+(D.poll_sec||300)+' 秒）后出现在标签页上';
+    m.textContent='✓ 已添加，已切到该标签，数据马上补上';
     m.className='msg ok';
-    load();
+    load(function(){ go(d.key||key); });
+    setTimeout(load, 8000); setTimeout(load, 20000);
   });
 }
 
@@ -307,7 +370,7 @@ function del(k){
   if(!confirm('从看板移除 '+k+'？历史数据保留，只是不再采集。')) return;
   fetch('/api/universe/remove',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})})
-   .then(function(){ if(TAB===k) TAB='__set__'; load(); });
+   .then(function(){ if(TAB===k){TAB='__set__';localStorage.setItem('tab',TAB);} load(); });
 }
 
 setInterval(function(){ load(); }, 60000);
@@ -338,7 +401,7 @@ def api_latest(poll_sec=300):
         d["trailing_24h"] = store.trailing(p["asset"], hours=24)
         out.append(d)
     return json.dumps({"ts": ts, "pairs": out, "universe": uni,
-                       "poll_sec": poll_sec,
+                       "order": uni_store.get_order(), "poll_sec": poll_sec,
                        "health": store.latest_health()},
                       ensure_ascii=False)
 

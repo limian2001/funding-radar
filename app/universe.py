@@ -54,6 +54,22 @@ def save_raw(d):
         os.replace(tmp, LIVE_PATH)      # 原子替换，避免写一半被读到
 
 
+def get_order():
+    raw = load_raw()
+    order = [k for k in (raw.get("_order") or []) if k in raw]
+    rest = [k for k in raw if not k.startswith("_") and k not in order]
+    return order + sorted(rest)
+
+
+def set_order(keys):
+    raw = load_raw()
+    valid = [k for k in (keys or []) if k in raw and not k.startswith("_")]
+    rest = [k for k in raw if not k.startswith("_") and k not in valid]
+    raw["_order"] = valid + rest
+    save_raw(raw)
+    return raw["_order"]
+
+
 def parsed():
     """返回 (universe, fx_override)。兼容新旧两种写法。"""
     raw = load_raw()
@@ -89,16 +105,27 @@ def add_asset(key, name, underlying, venues_map):
             raise ValueError("市场只能是 A / HK / US")
         u = {"market": m, "code": str(underlying["code"]).strip()}
     raw = load_raw()
+    is_new = key not in raw
     raw[key] = {"name": (name or key).strip(), "underlying": u,
                 "venues": venues_map}
+    if is_new:
+        # 新标的追加到末尾；_order 还没建立时先按当前自然顺序补齐
+        order = [k for k in (raw.get("_order") or [])
+                 if k in raw and not k.startswith("_") and k != key]
+        if not order:
+            order = [k for k in raw
+                     if not k.startswith("_") and k != key]
+        raw["_order"] = order + [key]
     save_raw(raw)
     return key
 
 
 def remove_asset(key):
     raw = load_raw()
+    key = (key or "").strip().upper()
     if key in raw:
         del raw[key]
+        raw["_order"] = [k for k in (raw.get("_order") or []) if k in raw]
         save_raw(raw)
         return True
     return False

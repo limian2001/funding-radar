@@ -18,6 +18,9 @@ AUTH_USER = os.environ.get("AUTH_USER", "")
 AUTH_PASS = os.environ.get("AUTH_PASS", "")
 MAX_BODY = 64 * 1024
 
+# 加了标的之后立刻催一次采集，不用干等一个轮询周期
+WAKE = threading.Event()
+
 
 def collector():
     while True:
@@ -30,7 +33,8 @@ def collector():
                 flush=True)
         except Exception:
             traceback.print_exc()
-        time.sleep(max(5, POLL_SEC - (time.time() - t0)))
+        WAKE.wait(max(5, POLL_SEC - (time.time() - t0)))
+        WAKE.clear()
 
 
 class H(BaseHTTPRequestHandler):
@@ -112,10 +116,15 @@ class H(BaseHTTPRequestHandler):
                 key = uni_store.add_asset(
                     d.get("key"), d.get("name"), d.get("underlying"),
                     d.get("venues"))
-                print("[universe] 添加 %s" % key, flush=True)
+                WAKE.set()                      # 立刻采一轮
+                print("[universe] 添加 %s，已触发立即采集" % key, flush=True)
                 return self._json({"ok": True, "key": key})
+            if path == "/api/universe/order":
+                return self._json({"ok": True,
+                                   "order": uni_store.set_order(d.get("order"))})
             if path == "/api/universe/remove":
-                ok = uni_store.remove_asset((d.get("key") or "").strip())
+                ok = uni_store.remove_asset(d.get("key"))
+                WAKE.set()
                 print("[universe] 删除 %s -> %s" % (d.get("key"), ok), flush=True)
                 return self._json({"ok": ok})
             self._json({"error": "未知接口"}, 404)
