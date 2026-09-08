@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import traceback
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import core, store, web
@@ -70,6 +71,11 @@ class H(BaseHTTPRequestHandler):
             if self.path.startswith("/api/latest"):
                 self._send(200, web.api_latest(),
                            "application/json; charset=utf-8")
+            elif self.path.startswith("/a/"):
+                asset = urllib.parse.unquote(
+                    self.path[3:].split("?")[0].strip("/"))
+                self._send(200, web.render_asset(asset),
+                           "text/html; charset=utf-8")
             else:
                 self._send(200, web.render(), "text/html; charset=utf-8")
         except Exception:

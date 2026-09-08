@@ -1,80 +1,99 @@
 # -*- coding: utf-8 -*-
-"""看板：每家交易所一列，横向对齐；右侧是推导值与 24h 历史。
-服务端渲染，不引外部资源。"""
+"""看板：/ 汇总（一标的一行），/a/<asset> 明细（一交易所一行）。
+服务端渲染，无外部资源。"""
 import html
 import json
 import time
+import urllib.parse
 
 from . import store
 
-# 列顺序固定，方便横向扫视；不在这个表里的所会追加到后面
-CANON = ["hyperliquid", "binance", "bybit", "gate", "okx"]
+CANON = ["hyperliquid", "binance", "bybit", "okx", "gate",
+         "bitget", "bingx", "edgex"]
 
 CSS = """
-:root{--bg:#fafafa;--fg:#1a1a1a;--mut:#777;--faint:#9a9a9a;--line:#e4e4e4;
---card:#fff;--pos:#0a7a52;--neg:#c0392b;
---longbg:rgba(10,122,82,.09);--shortbg:rgba(192,57,43,.09)}
-@media(prefers-color-scheme:dark){:root{--bg:#151517;--fg:#e8e8e8;--mut:#999;
---faint:#767676;--line:#2c2c30;--card:#1d1d20;--pos:#3ddc97;--neg:#ff6b5a;
---longbg:rgba(61,220,151,.11);--shortbg:rgba(255,107,90,.11)}}
 *{box-sizing:border-box}
-body{margin:0;padding:24px;background:var(--bg);color:var(--fg);
-font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
-h1{font-size:18px;margin:0 0 4px}
-.sub{color:var(--mut);font-size:12px;margin-bottom:16px}
-.wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+:root{--bg:#0d0d0f;--card:#151518;--line:#26262b;--fg:#e6e6e8;--mut:#8b8b93;
+--faint:#66666e;--pos:#2fbf71;--neg:#ff5c50;--acc:#4a9eff}
+body{margin:0;padding:20px;background:var(--bg);color:var(--fg);
+font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+h1{font-size:16px;margin:0 0 2px;font-family:system-ui,sans-serif}
+.sub{color:var(--mut);font-size:11px;margin-bottom:14px}
+.wrap{overflow-x:auto}
 table{border-collapse:collapse;background:var(--card);border:1px solid var(--line);
-border-radius:8px;overflow:hidden}
-th,td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--line);
-white-space:nowrap;vertical-align:top}
-th{background:rgba(128,128,128,.08);font-weight:600;font-size:11px;
-color:var(--mut);line-height:1.35;vertical-align:bottom}
-th:first-child,td:first-child{text-align:left;position:sticky;left:0;
-background:var(--card);z-index:1}
-th:first-child{background:#efefef}
-@media(prefers-color-scheme:dark){th:first-child{background:#26262a}}
+border-radius:6px;overflow:hidden;width:100%}
+th,td{padding:7px 10px;text-align:right;border-bottom:1px solid var(--line);
+white-space:nowrap;font-variant-numeric:tabular-nums}
+th{background:#1c1c21;color:var(--mut);font-size:10.5px;font-weight:600;
+text-align:right;font-family:system-ui,sans-serif}
+th:first-child,td:first-child{text-align:left}
 tr:last-child td{border-bottom:none}
-.grp{border-left:2px solid var(--line)}
-.asset{font-weight:700;font-size:14px}
-.apr{font-weight:600;font-size:13px;font-variant-numeric:tabular-nums}
-.raw{color:var(--faint);font-size:10.5px;font-variant-numeric:tabular-nums}
-.big{font-weight:700;font-size:15px;font-variant-numeric:tabular-nums}
-.pos{color:var(--pos)}.neg{color:var(--neg)}
-.s{color:var(--mut);font-size:11px}
-.long{background:var(--longbg)}.short{background:var(--shortbg)}
-.tag{display:inline-block;font-size:9.5px;line-height:1.5;padding:0 4px;
-border-radius:3px;margin-right:4px;vertical-align:1px;color:#fff}
+tbody tr:hover{background:#1a1a1f}
+.pos{color:var(--pos)}.neg{color:var(--neg)}.mut{color:var(--mut)}
+.faint{color:var(--faint);font-size:10.5px}
+.big{font-size:14px;font-weight:700}
+.name{font-family:system-ui,sans-serif;font-weight:600}
+.tag{display:inline-block;font-size:9px;padding:0 4px;border-radius:3px;
+margin-left:5px;color:#0d0d0f;font-family:system-ui,sans-serif}
 .t-long{background:var(--pos)}.t-short{background:var(--neg)}
-.note{color:var(--mut);font-size:12px;margin-top:18px;max-width:78ch}
+.t-prem{background:#e0a92b}
+.head{background:var(--card);border:1px solid var(--line);border-radius:6px;
+padding:12px 16px;margin-bottom:12px;display:flex;gap:26px;align-items:baseline;
+flex-wrap:wrap}
+.head .px{font-size:22px;font-weight:700}
+.note{color:var(--mut);font-size:11px;margin-top:16px;max-width:82ch;
+font-family:system-ui,sans-serif;line-height:1.65}
 .note b{color:var(--fg)}
-.health{margin-top:14px;font-size:12px;color:var(--mut)}
-.dot{display:inline-block;width:7px;height:7px;border-radius:50%;
-margin-right:5px;vertical-align:middle}
+.foot{margin-top:12px;font-size:11px;color:var(--mut);display:flex;gap:18px;
+flex-wrap:wrap}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px}
 .up{background:var(--pos)}.down{background:var(--neg)}
-.empty{padding:40px;text-align:center;color:var(--mut);background:var(--card);
-border:1px dashed var(--line);border-radius:8px}
+.empty{padding:36px;text-align:center;color:var(--mut);background:var(--card);
+border:1px dashed var(--line);border-radius:6px}
 """
 
-NOTE = """<b>怎么读：</b>中间每一列是一家交易所，每格三个信息——折算后的<b>年化</b>、
-以及下方的<b>原始单期费率 / 结算周期</b>。原始费率是你在交易所页面上看到的那个数；
-年化是把它乘上一年的周期数得来的，所以<b>周期不同的两家不能直接比原始费率</b>：
-1 小时结算的 0.01% 相当于 8 小时结算的 0.08%。
-绿底标「多」的是费率最低那家（在那边做多收钱），红底标「空」的是费率最高那家。
-净年化 = 空腿 − 多腿，未扣手续费、滑点与借贷成本；两条腿各占保证金，
-对总投入资金的实际年化约为其一半。
-<b>右侧几列比左侧重要。</b>把一个 1 小时的费率外推成一年，在新上市合约上几乎必然失真；
-24h 区间、均值与站上门槛的时间占比，才是机会站不站得住的证据。
-<b>基差</b>是两所标记价格的偏离——这类合约没有可交割现货，两所价格没有强制收敛的力量，
-基差摆动一旦大过资金费收益，这笔交易就是亏的。本页仅供研究，不构成投资建议。"""
+JS = """
+function tick(){var n=Date.now();
+document.querySelectorAll('[data-cd]').forEach(function(e){
+var d=+e.getAttribute('data-cd')-n; if(!(d>0)){e.textContent='--';return;}
+var s=Math.floor(d/1000),h=Math.floor(s/3600),m=Math.floor(s%3600/60);
+e.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+
+((s%60)<10?'0':'')+(s%60);});}
+setInterval(tick,1000);tick();
+"""
+
+NOTE_SUM = """<b>折溢价</b> = 永续价 ÷ 锚价 − 1，锚价 = 真实股价 ÷ 汇率。
+<b>只有溢价（正数）是你能执行的方向</b>：买入现货 + 做空永续；
+折价需要做空现货，A 股散户做不到，所以折价只作记录。
+<b>净年化</b> = 资金费最高的所（做空）− 最低的所（做多），已按各家真实结算周期折算；
+两条腿各占保证金，对总投入资金的实际年化约为其一半。数值均未扣手续费与滑点。
+标的与永续的交易时段不同，股市休市时锚价是上一个收盘价，此时的折溢价会失真——
+看「行情时间」判断新鲜度。本页仅供研究，不构成投资建议。"""
+
+NOTE_DET = """每行一家交易所。<b>资金费率</b>显示原始单期值与结算周期，右侧是折算后的年化：
+1 小时结算的 0.01% 相当于 8 小时结算的 0.08%，不折算直接比较是错的。
+<b>买一/卖一</b>的量决定你实际能吃多少——这是套利计算的必需项，
+纸面上的价差如果只有几百 U 的深度，扣完滑点就没了。
+<b>倒计时</b>是距下次资金费结算的时间，只有持仓到那一刻才收得到（或付得出）。
+本页仅供研究，不构成投资建议。"""
 
 
-def _cell(v, digits=1, cls_by_sign=True, suffix="%", extra="", sign=""):
+def _f(v, d=2, sign=False, suffix=""):
     if v is None:
-        return '<td class="s %s">—</td>' % extra
-    cls = ("pos" if v > 0 else ("neg" if v < 0 else "")) if cls_by_sign else ""
-    fmt = ('<td class="%s %s">%+.*f%s</td>' if sign
-           else '<td class="%s %s">%.*f%s</td>')
-    return fmt % (cls, extra, digits, v, suffix)
+        return '<span class=mut>--</span>'
+    cls = "pos" if v > 0 else ("neg" if v < 0 else "")
+    fmt = "%+." + str(d) + "f" if sign else "%." + str(d) + "f"
+    return '<span class="%s">%s%s</span>' % (cls, fmt % v, suffix)
+
+
+def _sz(v):
+    if v is None:
+        return "--"
+    for unit, div in (("M", 1e6), ("K", 1e3)):
+        if abs(v) >= div:
+            return "%.2f%s" % (v / div, unit)
+    return "%.4g" % v
 
 
 def _iv(h):
@@ -83,97 +102,141 @@ def _iv(h):
     return "%dm" % round(h * 60) if h < 1 else "%gh" % h
 
 
-def _venue_cell(leg, role):
-    if not leg:
-        return '<td class=s>—</td>'
-    apr = (leg["apr"] or 0) * 100.0
-    tag = ('<span class="tag t-long">多</span>' if role == "long" else
-           '<span class="tag t-short">空</span>' if role == "short" else "")
-    return ('<td class="%s"><div class="apr %s">%s%+.1f%%</div>'
-            '<div class=raw>%+.4f%% / %s</div></td>' % (
-                role, "pos" if apr > 0 else ("neg" if apr < 0 else ""),
-                tag, apr, leg["rate"] * 100.0, _iv(leg["interval_h"])))
+def _shell(title, body, extra_head=""):
+    return ("<!doctype html><html lang=zh><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>%s</title><style>%s</style>%s%s"
+            "<script>%s</script></html>"
+            % (title, CSS, extra_head, body, JS))
 
 
+def _health_bar():
+    hs = store.latest_health()
+    return " ".join(
+        '<span><span class="dot %s"></span>%s</span>' % (
+            "up" if h["ok"] else "down", html.escape(h["venue"]))
+        for h in sorted(hs, key=lambda x: CANON.index(x["venue"])
+                        if x["venue"] in CANON else 99))
+
+
+# --------------------------------------------------------------- 汇总页
 def render():
     ts, pairs = store.latest_pairs()
-    health = store.latest_health()
-    age = int(time.time()) - ts if ts else None
-
     if not pairs:
-        body = ('<div class=empty>还没有数据。<br><br>'
-                '1) 先跑 <code>docker compose run --rm radar '
-                'python -m app.discover CXMT</code> 找符号<br>'
-                '2) 填进 <code>config/universe.json</code><br>'
-                '3) 等下一轮采集（无需重启）</div>')
-    else:
-        legs_by_asset = {p["asset"]: {l["venue"]: l
-                                      for l in store.latest_legs(p["asset"])}
-                         for p in pairs}
-        seen = set()
-        for m in legs_by_asset.values():
-            seen |= set(m)
-        cols = [v for v in CANON if v in seen] + sorted(seen - set(CANON))
+        return _shell("Funding Radar", "<h1>跨市场折溢价 / 资金费雷达</h1>"
+                      "<div class=empty>还没有数据。先用 "
+                      "<code>python -m app.discover CXMT</code> 找符号，"
+                      "填进 config/universe.json，等下一轮采集。</div>")
+    rows = []
+    for p in sorted(pairs, key=lambda x: -(x["best_prem_pct"] or -999)):
+        a = html.escape(p["asset"])
+        stock = ("%s <span class=faint>%s %s</span>" % (
+            _f(p["stock_price"], 3), p["ccy"] or "", p["quote_time"] or "")
+            if p["stock_price"] else '<span class=mut>--</span>')
+        rows.append(
+            "<tr><td><a href='/a/%s'><span class=name>%s</span></a>"
+            " <span class=faint>%s</span></td>"
+            "<td>%s</td><td>%s</td>"
+            "<td>%s <span class=faint>%s</span></td>"
+            "<td>%s <span class=faint>%s</span></td>"
+            "<td class=big>%s</td>"
+            "<td class=faint>%s→%s</td>"
+            "<td>%s</td><td class=faint>%d</td></tr>" % (
+                urllib.parse.quote(p["asset"]), a,
+                html.escape(p["stock_name"] or ""),
+                stock, _f(p["anchor_usd"], 4),
+                _f(p["best_prem_pct"], 2, sign=True, suffix="%"),
+                html.escape(p["best_prem_venue"] or ""),
+                _f(p["worst_prem_pct"], 2, sign=True, suffix="%"),
+                html.escape(p["worst_prem_venue"] or ""),
+                _f(p["net_apr"], 1, sign=True, suffix="%"),
+                html.escape(p["long_venue"] or "--"),
+                html.escape(p["short_venue"] or "--"),
+                _f(p["mark_spread_pct"], 3, sign=True, suffix="%"),
+                p["n_legs"]))
+    body = ("<h1>跨市场折溢价 / 资金费雷达</h1>"
+            "<div class=sub>%s UTC · 每 60 秒自动刷新 · 点标的看明细</div>"
+            "<div class=wrap><table><thead><tr>"
+            "<th>标的</th><th>股价</th><th>锚价 USD</th>"
+            "<th>最高溢价</th><th>最低溢价</th>"
+            "<th>资金费净年化</th><th>多→空</th><th>标记价差</th><th>腿</th>"
+            "</tr></thead><tbody>%s</tbody></table></div>"
+            "<div class=foot><span>数据源 %s</span></div>"
+            "<p class=note>%s</p>" % (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)),
+                "".join(rows), _health_bar(), NOTE_SUM.replace("\n", " ")))
+    return _shell("Funding Radar", body,
+                  "<meta http-equiv=refresh content=60>")
 
-        rows = []
-        for p in pairs:
-            legs = legs_by_asset[p["asset"]]
-            t = store.trailing(p["asset"], hours=24)
-            tds = []
-            for v in cols:
-                role = ("long" if v == p["long_venue"] else
-                        "short" if v == p["short_venue"] else "")
-                tds.append(_venue_cell(legs.get(v), role))
-            if p["net_apr"] is None:
-                net_td = ('<td class="s grp" colspan=2>各家费率相同，'
-                          '无可对冲价差</td>')
-            else:
-                net_td = ('<td class="big grp %s">%+.1f%%</td>'
-                          '<td class="%s">%+.1f%%</td>' % (
-                              "pos" if p["net_apr"] > 0 else "neg", p["net_apr"],
-                              "pos" if p["net_apr"] > 0 else "neg",
-                              p["net_apr"] / 2))
-            rng = ("%+.0f ~ %+.0f%%" % (t["min_net"], t["max_net"])
-                   if t.get("min_net") is not None else "—")
-            rows.append(
-                '<tr><td class=asset>%s <span class=s>%d腿</span></td>%s%s%s'
-                '<td class="s grp">%s</td>%s%s<td class=s>%d</td></tr>' % (
-                    html.escape(p["asset"]), p["n_legs"], "".join(tds), net_td,
-                    _cell(p["mark_spread_pct"], 3, extra="grp", sign="+"),
-                    rng,
-                    _cell(t.get("avg_net"), 1, sign="+"),
-                    _cell(t.get("pct_above"), 0, cls_by_sign=False),
-                    t.get("n") or 0))
 
-        head = ("<tr><th>标的</th>"
-                + "".join("<th>%s</th>" % html.escape(v) for v in cols)
-                + '<th class=grp>净年化<br>此刻</th><th>占用<br>总资金</th>'
-                  '<th class=grp>基差<br>此刻</th>'
-                  '<th class=grp>24h<br>净年化区间</th><th>24h<br>均值</th>'
-                  '<th>24h 站上<br>10% 的时间</th><th>样本</th></tr>')
-        body = '<div class=wrap><table>%s%s</table></div>' % (
-            head, "".join(rows))
+# --------------------------------------------------------------- 明细页
+def render_asset(asset):
+    ts, pairs = store.latest_pairs()
+    p = next((x for x in pairs if x["asset"] == asset), None)
+    if not p:
+        return _shell("未找到", "<h1>没有这个标的</h1>"
+                      "<p><a href='/'>返回汇总</a></p>")
+    legs = store.latest_legs(asset)
+    order = {v: i for i, v in enumerate(CANON)}
+    legs.sort(key=lambda l: order.get(l["venue"], 99))
 
-    hs = " &nbsp; ".join(
-        '<span class="dot %s"></span>%s%s' % (
-            "up" if h["ok"] else "down", html.escape(h["venue"]),
-            "" if h["ok"] else " (失败)")
-        for h in sorted(health, key=lambda x: x["venue"]))
+    rows = []
+    for l in legs:
+        tags = ""
+        if l["venue"] == p["long_venue"]:
+            tags += '<span class="tag t-long">多</span>'
+        if l["venue"] == p["short_venue"]:
+            tags += '<span class="tag t-short">空</span>'
+        if l["venue"] == p["best_prem_venue"] and (p["best_prem_pct"] or 0) > 0:
+            tags += '<span class="tag t-prem">溢价</span>'
+        cd = ('<span data-cd="%d">--</span>' % l["next_ts"]
+              if l.get("next_ts") else '<span class=mut>--</span>')
+        rows.append(
+            "<tr><td><span class=name>%s</span>%s</td>"
+            "<td class=faint>%s</td><td>%s</td><td>%s</td>"
+            "<td>%s <span class=faint>/%s</span></td><td>%s</td><td>%s</td>"
+            "<td>%s <span class=faint>× %s</span></td>"
+            "<td>%s <span class=faint>× %s</span></td><td>%s</td></tr>" % (
+                html.escape(l["venue"]), tags, html.escape(l["symbol"]),
+                _f(l["last"], 4), _f(l["premium_pct"], 2, sign=True, suffix="%"),
+                _f((l["rate"] or 0) * 100, 4, sign=True, suffix="%"),
+                _iv(l["interval_h"]),
+                _f(l["apr"] * 100 if l["apr"] is not None else None, 1,
+                   sign=True, suffix="%"),
+                cd,
+                _f(l["bid"], 4), _sz(l["bid_sz"]),
+                _f(l["ask"], 4), _sz(l["ask_sz"]),
+                _f(l["mark"], 4)))
 
-    return """<!doctype html><html lang=zh><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<title>Funding Radar</title><style>%s</style>
-<meta http-equiv=refresh content=60>
-<h1>跨所资金费率雷达</h1>
-<div class=sub>最近一轮：%s（%s 秒前）· 每 60 秒自动刷新</div>
-%s
-<div class=health>数据源 %s</div>
-<p class=note>%s</p>
-</html>""" % (
-        CSS,
-        time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts)) if ts else "—",
-        age if age is not None else "—",
-        body, hs or "—", NOTE.replace("\n", " "))
+    head = ("<div class=head>"
+            "<div><div class=faint>标的</div>"
+            "<div class=name style='font-size:17px'>%s <span class=faint>%s</span>"
+            "</div></div>"
+            "<div><div class=faint>股价</div><div class=px>%s</div></div>"
+            "<div><div class=faint>汇率 %s</div><div>%s</div></div>"
+            "<div><div class=faint>锚价 USD</div><div class=px>%s</div></div>"
+            "<div><div class=faint>行情时间</div><div>%s</div></div>"
+            "<div style='margin-left:auto'><a href='/'>← 汇总</a></div>"
+            "</div>" % (
+                html.escape(p["stock_name"] or asset), html.escape(asset),
+                _f(p["stock_price"], 3), p["ccy"] or "--", _f(p["fx"], 4),
+                _f(p["anchor_usd"], 4),
+                html.escape(p["quote_time"] or "--")))
+
+    body = ("<h1>%s</h1><div class=sub>%s UTC · 每 60 秒自动刷新</div>%s"
+            "<div class=wrap><table><thead><tr>"
+            "<th>交易所</th><th>合约</th><th>最新价</th><th>折溢价</th>"
+            "<th>资金费率/周期</th><th>年化</th><th>结算倒计时</th>"
+            "<th>买一 × 量</th><th>卖一 × 量</th><th>标记价</th>"
+            "</tr></thead><tbody>%s</tbody></table></div>"
+            "<div class=foot><span>数据源 %s</span></div>"
+            "<p class=note>%s</p>" % (
+                html.escape(asset),
+                time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)),
+                head, "".join(rows), _health_bar(),
+                NOTE_DET.replace("\n", " ")))
+    return _shell(asset + " · Funding Radar", body,
+                  "<meta http-equiv=refresh content=60>")
 
 
 def api_latest():
@@ -181,11 +244,7 @@ def api_latest():
     out = []
     for p in pairs:
         d = dict(p)
-        d["legs"] = [
-            {"venue": l["venue"], "symbol": l["symbol"], "rate": l["rate"],
-             "interval_h": l["interval_h"], "apr_pct": (l["apr"] or 0) * 100.0,
-             "mark": l["mark"]}
-            for l in store.latest_legs(p["asset"])]
+        d["legs"] = store.latest_legs(p["asset"])
         d["trailing_24h"] = store.trailing(p["asset"], hours=24)
         out.append(d)
     return json.dumps({"ts": ts, "pairs": out,

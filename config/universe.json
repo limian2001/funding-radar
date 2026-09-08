@@ -1,24 +1,47 @@
 {
-  "_说明": "key 是你自己给标的起的名字；value 里每个 venue 填该所的真实符号。先用 discover 搜出来再填，不要猜。改完自动生效，不用重启容器。",
-
-  "BTC": {
-    "hyperliquid": "BTC",
-    "binance": "BTCUSDT",
-    "bybit": "BTCUSDT",
-    "gate": "BTC_USDT"
+  "_说明": "每个标的：name 中文名，underlying 是真实股票（market: A/HK/US + code），venues 是各所合约符号。先用 discover 搜符号再填，别猜。改完自动生效，不用重启。",
+  "_fx": {
+    "_注": "接口取不到汇率时用这里的手填值兜底；留空则完全依赖接口",
+    "CNH": null,
+    "HKD": null
   },
 
   "CXMT": {
-    "binance": "CXMTUSDT",
-    "bybit": "CXMTUSDT",
-    "gate": "CXMT_USDT",
-    "okx": "CXMT-USDT-SWAP"
+    "name": "长鑫科技",
+    "underlying": {"market": "A", "code": "688825"},
+    "venues": {
+      "binance": "CXMTUSDT",
+      "bybit": "CXMTUSDT",
+      "gate": "CXMT_USDT",
+      "okx": "CXMT-USDT-SWAP",
+      "bitget": "CXMTUSDT",
+      "bingx": "CXMT-USDT"
+    }
   },
 
   "UNITREE": {
-    "binance": "UNITREEUSDT",
-    "bybit": "UNITREEUSDT",
-    "gate": "UNITREE_USDT",
-    "okx": "UNITREE-USDT-SWAP"
+    "name": "宇树科技",
+    "underlying": {"market": "A", "code": "688099"},
+    "venues": {
+      "binance": "UNITREEUSDT",
+      "bybit": "UNITREEUSDT",
+      "gate": "UNITREE_USDT",
+      "okx": "UNITREE-USDT-SWAP",
+      "bitget": "UNITREEUSDT",
+      "bingx": "UNITREE-USDT"
+    }
+  },
+
+  "BTC": {
+    "name": "比特币（对照组）",
+    "underlying": null,
+    "venues": {
+      "hyperliquid": "BTC",
+      "binance": "BTCUSDT",
+      "bybit": "BTCUSDT",
+      "gate": "BTC_USDT",
+      "okx": "BTC-USDT-SWAP",
+      "bitget": "BTCUSDT"
+    }
   }
 }
